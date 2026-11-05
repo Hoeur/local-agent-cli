@@ -15,6 +15,7 @@ from .attachments import message_text
 from .file_commands import FILE_HELP, FileCommands
 from .hologram import Capabilities
 from .hologram_widget import HologramRenderer
+from .monitor_widget import SystemMonitor
 
 
 CYAN = "#62edff"
@@ -120,9 +121,10 @@ class ChatApp(App[int]):
         padding: 0 1;
         border: round #32748d;
         background: #101b2b;
-        overflow-y: hidden;
+        overflow-y: auto;
     }
-    #status-title { margin: 1 0; }
+    #status-title { height: 1; margin: 0 0 1 0; }
+    #status-lines { height: auto; }
     #orb { height: 12; }
     #prompt {
         height: 3;
@@ -164,10 +166,13 @@ class ChatApp(App[int]):
                     yield HologramRenderer(id="welcome-core", **self.graphics_options)
                     yield Static("N E U R A L   C O R E\nReady for your next idea", id="welcome-title")
                 yield VerticalScroll(id="transcript")
-            with Vertical(id="status"):
-                yield Static(Text("SYSTEM STATUS", style=f"bold {CYAN}"), id="status-title")
-                yield HologramRenderer(id="orb", **self.graphics_options)
+            with VerticalScroll(id="status"):
+                yield Static(Text("SYSTEM MONITOR", style=f"bold {CYAN}"), id="status-title")
+                yield SystemMonitor(self.agent.workspace or self.agent.state.path.parent,
+                                    unicode=self.graphics_options["capabilities"].unicode,
+                                    color=self.graphics_options["capabilities"].color, id="system-monitor")
                 yield Static(id="status-lines")
+                yield HologramRenderer(id="orb", **self.graphics_options)
         yield Input(placeholder="❯ Ask a follow-up…", id="prompt")
         yield Static(id="shortcuts")
 
@@ -195,8 +200,9 @@ class ChatApp(App[int]):
         self.query_one("#welcome").display = welcome
         self.query_one("#welcome-core", HologramRenderer).set_active(welcome)
         orb = self.query_one("#orb", HologramRenderer)
-        orb.styles.height = min(core_height, max(6, size.height - 17))
-        orb.set_active(self.hologram_visible and status.display and not welcome)
+        available = max(0, size.height - 25)
+        orb.styles.height = min(core_height, available)
+        orb.set_active(self.hologram_visible and status.display and not welcome and available >= 4)
 
     def update_status(self):
         files = "READ ONLY" if self.agent.workspace is not None else "OFF"
