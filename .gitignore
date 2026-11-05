@@ -1,0 +1,8 @@
+__pycache__/
+.agent/
+.env
+.venv/
+*.egg-info/
+build/
+dist/
+node_modules/

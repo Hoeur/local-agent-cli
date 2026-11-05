@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-agent-cli"
+version = "0.1.0"
+description = "A local CLI agent with persistent sessions, memory, and reusable skills"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+tui = ["textual>=8.2,<9"]
+graphics = ["textual>=8.2,<9", "textual-image==0.12.0"]
+
+[project.scripts]
+local-agent = "local_agent.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["local_agent*"]
+
+[tool.setuptools.package-data]
+local_agent = ["graphics/*.ts", "graphics/package.json", "graphics/package-lock.json"]
