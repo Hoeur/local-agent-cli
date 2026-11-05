@@ -6,7 +6,7 @@ from textual import work
 from textual.message import Message
 from textual.widgets import Static
 
-from .system_monitor import SystemMetrics, SystemSampler
+from ..system_monitor import SystemMetrics, SystemSampler
 
 
 def memory_size(value):
@@ -24,7 +24,7 @@ class MetricsReady(Message):
 
 
 class SystemMonitor(Static):
-    DEFAULT_CSS = "SystemMonitor { height: auto; margin-bottom: 1; }"
+    DEFAULT_CSS = "SystemMonitor { height: auto; margin: 0 1 1 1; }"
 
     def __init__(self, path, *, unicode=True, color=True, sampler=None, **kwargs):
         super().__init__(Text("Reading system metrics..."), **kwargs)
@@ -66,11 +66,16 @@ class SystemMonitor(Static):
             self.history.append(max(0, min(100, message.metrics.cpu)))
         self.update(self.metrics_text(message.metrics))
 
+    def render(self):
+        return self.metrics_text(self.latest) if self.latest else Text("Reading system metrics...")
+
     def metrics_text(self, metrics):
         text = Text(no_wrap=True, overflow="crop")
-        normal = "#93a9bf" if self.color else None
-        value = "#62edff" if self.color else None
-        cpu_color = ("#ffca80" if metrics.cpu is not None and metrics.cpu >= 85 else value)
+        palette = self.app.palette
+        normal = palette["muted"] if self.color else None
+        value = palette["primary"] if self.color else None
+        text.append("SYSTEM MONITOR\n", style=("bold " + value) if value else "bold")
+        cpu_color = (palette["warning"] if metrics.cpu is not None and metrics.cpu >= 85 else value)
         cpu = f"{metrics.cpu:5.1f}%" if metrics.cpu is not None else "N/A"
         cores = f"  {metrics.cores} threads" if metrics.cores else ""
         text.append("CPU  ", normal)
@@ -85,7 +90,7 @@ class SystemMonitor(Static):
         percent = f" {metrics.memory_percent:.0f}%" if metrics.memory_percent is not None else ""
         total = f"/{metrics.memory_total / 1024 ** 3:.1f}G" if metrics.memory_total else ""
         used = f"{metrics.memory_used / 1024 ** 3:.1f}" if metrics.memory_used is not None else "N/A"
-        memory_color = "#ffca80" if self.color and (metrics.memory_percent or 0) >= 85 else value
+        memory_color = palette["warning"] if self.color and (metrics.memory_percent or 0) >= 85 else value
         text.append("RAM  ", normal)
         text.append(used + total + percent + "\n", memory_color)
         text.append("DISK ", normal)

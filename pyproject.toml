@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-agent-cli"
-version = "0.1.0"
-description = "A local CLI agent with persistent sessions, memory, and reusable skills"
+version = "0.3.0"
+description = "A local CLI agent with file, shell and web tools, persistent sessions, memory and skills"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-tui = ["textual>=8.2,<9", "psutil>=6.0"]
-graphics = ["textual>=8.2,<9", "textual-image==0.12.0", "psutil>=6.0"]
+# The full-screen terminal UI. The core agent and the line-based chat stay standard-library only.
+tui = ["textual>=8.0,<9", "psutil>=6.0"]
+# Optional: render the hologram through Sixel or the Kitty graphics protocol (/hologram image).
+hologram-image = ["textual>=8.0,<9", "textual-image>=0.14; python_version >= '3.12'", "pillow>=10.3"]
 
 [project.scripts]
 local-agent = "local_agent.__main__:main"
@@ -20,4 +22,4 @@ local-agent = "local_agent.__main__:main"
 include = ["local_agent*"]
 
 [tool.setuptools.package-data]
-local_agent = ["graphics/*.ts", "graphics/package.json", "graphics/package-lock.json"]
+"local_agent.tui" = ["*.tcss"]

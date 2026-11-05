@@ -1,330 +1,238 @@
-import asyncio
-import io
-import json
-import tempfile
-import threading
-import time
+"""Tests for the holographic core engine: state machine, projection, rasterizers, governor and
+capability detection. Skipped when Textual (and with it Rich) is not installed."""
+import importlib.util
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 
-from local_agent.agent import Agent
-from local_agent.events import AgentEvent
-from local_agent.hologram import Capabilities, HologramScene
-from local_agent.provider import ChatProvider
-from local_agent.state import State
+if importlib.util.find_spec("textual") is None:  # The UI is an optional extra: pip install -e ".[tui]"
+    raise unittest.SkipTest("Textual is not installed")
 
+from local_agent.tui import hologram as h
+from local_agent.tui.theme import PALETTES
 
-class Terminal:
-    encoding = "utf-8"
-
-    def isatty(self):
-        return True
+PALETTE = PALETTES["neon"]
 
 
-class SceneTests(unittest.TestCase):
-    def test_capability_profiles(self):
-        for env in ({"WT_SESSION": "windows"}, {"TERM": "xterm-256color"},
-                    {"TERM_PROGRAM": "Apple_Terminal"}, {"TERM": "xterm-kitty"}):
-            with self.subTest(env=env):
-                cap = Capabilities.detect(env, Terminal())
-                self.assertTrue(cap.interactive and cap.unicode and cap.color)
-                self.assertFalse(cap.remote)
-        cap = Capabilities.detect({"SSH_CONNECTION": "remote", "NO_COLOR": "", "AGENT_NO_ANIMATION": "1"}, Terminal())
-        self.assertTrue(cap.remote and cap.reduced_motion)
-        self.assertFalse(cap.color)
-        self.assertFalse(Capabilities.detect({"TERM": "dumb"}, Terminal()).interactive)
-        self.assertFalse(Capabilities.detect({}, io.StringIO()).interactive)
+class FakeClock:
+    def __init__(self):
+        self.t = 0.0
 
-    def test_projection_bounds_motion_and_ascii(self):
-        now = [0.0]
-        scene = HologramScene(clock=lambda: now[0])
-        first = scene.cells(40, 14)
-        for _ in range(20):
-            now[0] += 0.05
-            scene.advance()
-        self.assertNotEqual(first, scene.cells(40, 14))
-        for width, height in ((1, 1), (12, 5), (80, 24)):
-            cells = scene.cells(width, height, unicode=False)
-            self.assertEqual(len(cells), height)
-            self.assertTrue(all(len(row) == width for row in cells))
-            self.assertTrue(all(ord(char) < 128 for row in cells for char, _ in row))
+    def __call__(self):
+        return self.t
 
-    def test_states_audio_and_transient_expiration(self):
-        now = [0.0]
-        scene = HologramScene(clock=lambda: now[0])
-        scene.event(AgentEvent("thinking"))
-        scene.event(AgentEvent("token", text="Hello"))
-        self.assertEqual(scene.state, "generating")
-        self.assertGreater(scene.activity, 0)
-        scene.event(AgentEvent("tool_start", completed=1, total=3))
-        self.assertEqual(scene.progress, (1, 3))
-        scene.event(AgentEvent("audio"))
-        self.assertEqual(scene.state, "tool")
-        scene.event(AgentEvent("audio", level=0.7))
-        self.assertEqual(scene.state, "voice")
-        now[0] = 2
-        scene.advance()
-        self.assertEqual(scene.state, "idle")
-        for state in ("success", "error"):
-            scene.event(AgentEvent(state))
-            self.assertEqual(scene.state, state)
-            now[0] += 2
-            scene.advance()
-            self.assertEqual(scene.state, "idle")
+    def advance(self, director, seconds, fps=30, palette=PALETTE):
+        for _ in range(int(seconds * fps)):
+            self.t += 1 / fps
+            director.step(self.t, palette)
 
 
-def sse(*chunks, done=True):
-    data = "".join("data: " + json.dumps(chunk) + "\r\n\r\n" for chunk in chunks)
-    if done:
-        data += "data: [DONE]\r\n\r\n"
-    response = io.BytesIO(data.encode())
-    response.headers = {"Content-Type": "text/event-stream; charset=utf-8"}
-    return response
+def braille_density(cols, rows):
+    return min(cols * 2, rows * 4) / 2 / h.EXTENT
 
 
-def chunk(delta, finish=None):
-    return {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
-
-
-class StreamingTests(unittest.TestCase):
+class DirectorTests(unittest.TestCase):
     def setUp(self):
-        self.provider = ChatProvider("http://localhost:11434/v1", "test", None)
+        self.clock = FakeClock()
+        self.director = h.Director(self.clock)
 
-    def test_unicode_tokens_and_fragmented_tool_arguments(self):
-        tokens = []
-        response = sse(chunk({"content": "Hello 世界"}), chunk({"tool_calls": [{
-            "index": 0, "id": "call-1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":'},
-        }]}), chunk({"tool_calls": [{"index": 0, "function": {"arguments": '"notes.txt"}'}}]}, "tool_calls"))
-        with patch.object(self.provider.opener, "open", return_value=response):
-            reply = self.provider.complete_stream([], [], tokens.append)
-        self.assertEqual(tokens, ["Hello 世界"])
-        self.assertEqual(json.loads(reply["tool_calls"][0]["function"]["arguments"]), {"path": "notes.txt"})
+    def test_states_ease_instead_of_jumping(self):
+        d = self.director
+        self.clock.advance(d, 0.5)
+        idle = d.params["energy"]
+        d.set_state("thinking")
+        self.clock.advance(d, 0.1)
+        partway = d.params["energy"]
+        self.assertGreater(partway, idle)
+        self.assertLess(partway, h.PROFILES["thinking"]["energy"] - 0.1)
+        self.clock.advance(d, 2.0)
+        self.assertAlmostEqual(d.params["energy"], h.PROFILES["thinking"]["energy"], places=2)
 
-    def test_partial_stream_and_truncated_completion_fail(self):
-        for response in (sse(chunk({"content": "partial"}), done=False),
-                         sse(chunk({"content": "partial"}, "length")),
-                         sse(chunk({"content": "partial"})),
-                         sse({"error": {"message": "failed"}})):
-            with self.subTest(), patch.object(self.provider.opener, "open", return_value=response):
-                with self.assertRaises(RuntimeError):
-                    self.provider.complete_stream([], [], lambda _: None)
+    def test_static_step_snaps_to_target(self):
+        d = self.director
+        d.set_state("generating")
+        d.step(1.0, PALETTE, motion=False)
+        self.assertEqual(d.params, h.PROFILES["generating"])
 
-    def test_non_streaming_endpoint_and_explicit_rejection(self):
-        response = io.BytesIO(json.dumps({"choices": [{"message": {"content": "JSON reply"}}]}).encode())
-        response.headers = {"Content-Type": "application/json"}
-        with patch.object(self.provider.opener, "open", return_value=response):
-            self.assertEqual(self.provider.complete_stream([], [], lambda _: None)["content"], "JSON reply")
-        from urllib.error import HTTPError
-        with patch.object(self.provider.opener, "open", side_effect=HTTPError("url", 422, "", {}, None)), \
-                patch.object(self.provider, "complete", return_value={"content": "fallback"}) as complete:
-            self.assertEqual(self.provider.complete_stream([], [], lambda _: None)["content"], "fallback")
-            complete.assert_called_once()
+    def test_phase_is_continuous_when_speed_changes(self):
+        d = self.director
+        self.clock.advance(d, 1.0)
+        before = d.phase["spin"]
+        d.set_state("thinking")
+        self.clock.advance(d, 1 / 30)
+        self.assertLess(d.phase["spin"] - before, 0.1)  # No jump, just a slightly faster step.
 
-    def test_events_wrap_real_tools_and_commit_and_observer_cannot_break_turn(self):
-        class Provider:
-            count = 0
+    def test_flashes_expire_and_tint(self):
+        d = self.director
+        self.clock.advance(d, 0.3)
+        d.flash("success")
+        self.clock.advance(d, 0.2)
+        self.assertEqual(d.flash_age()[0], "success")
+        self.assertEqual(d.label(), "complete")
+        self.assertGreater(d.tint_amount, 0.3)
+        self.clock.advance(d, 1.5)
+        self.assertIsNone(d.flash_age()[0])
+        self.assertLess(d.tint_amount, 0.05)
+        with self.assertRaises(ValueError):
+            d.flash("sparkles")
+        with self.assertRaises(ValueError):
+            d.set_state("dancing")
 
-            def complete_stream(self, messages, tools, on_token):
-                self.count += 1
-                if self.count == 1:
-                    return {"role": "assistant", "content": None, "tool_calls": [{
-                        "id": "one", "type": "function", "function": {
-                            "name": "remember", "arguments": '{"name":"style","value":"brief"}',
-                        },
-                    }]}
-                on_token("Saved.")
-                return {"role": "assistant", "content": "Saved."}
+    def test_waves_merge_bursts_and_fade(self):
+        d = self.director
+        for _ in range(20):
+            d.wave(0.5)  # All at the same instant: one merged wave.
+        self.assertEqual(len(d.waves), 1)
+        self.assertLessEqual(d.waves[0][1], 1.4)
+        for _ in range(10):
+            self.clock.t += 0.2
+            d.wave(0.5)
+        self.assertLessEqual(len(d.waves), 6)
+        self.assertTrue(d.active())
+        self.clock.advance(d, h.WAVE_LIFE + 0.1)
+        self.assertEqual(d.waves, [])
+        self.assertFalse(d.active())
 
-        with tempfile.TemporaryDirectory() as temporary:
-            state = State(Path(temporary))
-            events = []
-            Agent(Provider(), state).turn("demo", "remember", True, on_event=events.append)
-            self.assertEqual([event.kind for event in events],
-                             ["thinking", "tool_start", "tool_end", "thinking", "token", "success"])
-            self.assertEqual(state.library("memory"), {"style": "brief"})
-            Agent(Provider(), state).turn("demo", "remember", True, on_event=lambda _: 1 / 0)
-            self.assertEqual(state.sessions(), [("demo", 2)])
+    def test_tool_progress(self):
+        d = self.director
+        d.set_state("tool", "read_file")
+        d.tool_round(2)
+        self.assertLess(d.progress(), 0.05)
+        self.clock.t += 5
+        self.assertAlmostEqual(d.progress(), 0.85 / 2, places=1)  # The running call approaches 85%.
+        self.assertLess(d.progress(), 0.85 / 2)
+        d.tool_finished()
+        d.tool_started_event()
+        self.assertAlmostEqual(d.progress(), 0.5, places=2)
+        d.tool_finished(error=True)
+        self.assertEqual(d.progress(), 1.0)
+        self.assertEqual(d.flash_age()[0], "glitch")
+        d.set_state("idle")
+        self.assertEqual((d.tools_total, d.tools_done), (0, 0))
 
-    def test_stream_failure_rolls_back_pending_learning(self):
-        first = sse(chunk({"tool_calls": [{"index": 0, "id": "one", "type": "function", "function": {
-            "name": "remember", "arguments": '{"name":"style","value":"brief"}',
-        }}]}, "tool_calls"))
-        second = sse(chunk({"content": "Partial reply"}), done=False)
-        with tempfile.TemporaryDirectory() as temporary:
-            state = State(Path(temporary))
-            events = []
-            with patch.object(self.provider.opener, "open", side_effect=[first, second]):
-                with self.assertRaises(RuntimeError):
-                    Agent(self.provider, state).turn("demo", "remember", True, on_event=events.append)
-            self.assertEqual(events[-1].kind, "error")
-            self.assertEqual(state.sessions(), [])
-            self.assertEqual(state.library("memory"), {})
+    def test_voice_needs_live_audio(self):
+        d = self.director
+        self.assertEqual(d.effective_state(), "idle")
+        d.set_audio_level(1.7)
+        self.assertEqual(d.audio, 1.0)
+        self.assertEqual(d.effective_state(), "voice")
+        d.set_state("thinking")
+        self.assertEqual(d.effective_state(), "thinking")  # Agent activity wins over voice.
+        d.set_state("idle")
+        self.clock.t += h.AUDIO_STALE + 0.1
+        self.assertEqual(d.effective_state(), "idle")
 
 
-class HologramUITests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        try:
-            from local_agent.tui import ChatApp
-        except ModuleNotFoundError:
-            self.skipTest("Install the tui extra")
-        self.ChatApp = ChatApp
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
+class RenderTests(unittest.TestCase):
+    def frame(self, state="idle", seconds=1.0, density=None, palette=PALETTE):
+        clock = FakeClock()
+        director = h.Director(clock)
+        director.set_state(state)
+        clock.advance(director, seconds, palette=palette)
+        return h.Scene().frame(director, clock.t, palette, density or braille_density(30, 14))
 
-    async def test_paused_initial_frame_and_resize(self):
-        class Provider:
-            model = "test"
-        app = self.ChatApp(Agent(Provider(), State(Path(self.temp.name))), "demo", False,
-                           hologram="unicode", animated=False,
-                           capabilities=Capabilities(True, True, True, False, False, None))
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            core = app.query_one("#welcome-core")
-            self.assertIn("IDLE", str(core.content))
-            first = str(core.content)
-            phase = core.scene.phase
-            await pilot.resize_terminal(90, 30)
-            await pilot.pause()
-            self.assertIn("IDLE", str(core.content))
-            self.assertNotEqual(first, str(core.content))
-            self.assertEqual(phase, core.scene.phase)
+    def test_braille_output_fits_and_uses_braille(self):
+        for state in h.STATES:
+            for cols, rows in ((30, 14), (47, 22), (18, 8)):
+                rows_out = h.rasterize_braille(self.frame(state, density=braille_density(cols, rows)), cols, rows)
+                self.assertEqual(len(rows_out), rows)
+                for row in rows_out:
+                    text = "".join(run[0] for run in row)
+                    self.assertEqual(len(text), cols)
+                    self.assertTrue(all(char == " " or 0x2800 <= ord(char) <= 0x28FF for char in text))
+        lit = sum(run[0].count(c) for row in h.rasterize_braille(self.frame(), 30, 14) for run in row
+                  for c in set(run[0]) if c != " ")
+        self.assertGreater(lit, 40)
 
-    async def test_commands_dismiss_welcome_and_leave_output_visible(self):
-        class Provider:
-            model = "test"
+    def test_ascii_fallback_is_pure_ascii(self):
+        frame = self.frame("thinking", density=min(40, 36) / 2 / h.EXTENT)
+        rows_out = h.rasterize_ascii(frame, 40, 18)
+        self.assertEqual(len(rows_out), 18)
+        text = "".join(run[0] for row in rows_out for run in row)
+        self.assertTrue(text.isascii())
+        self.assertIn("@", text)  # The core.
 
-        for command, expected in (("/help", "Enter sends a prompt"),
-                                  ("/sessions", "No saved sessions yet"),
-                                  ("/hologram status", "Hologram:")):
-            with self.subTest(command=command):
-                app = self.ChatApp(Agent(Provider(), State(Path(self.temp.name))), "demo", False,
-                                   animated=False,
-                                   capabilities=Capabilities(True, True, True, False, False, None))
-                async with app.run_test(size=(100, 25)) as pilot:
-                    self.assertTrue(app.query_one("#welcome").display)
-                    app.query_one("#prompt").value = command
-                    await pilot.press("enter")
-                    await pilot.pause()
-                    transcript = app.query_one("#transcript")
-                    self.assertFalse(app.query_one("#welcome").display)
-                    self.assertGreaterEqual(transcript.content_size.height, 8)
-                    self.assertIn(expected, str(transcript.children[-1].content))
-                    await pilot.resize_terminal(120, 40)
-                    self.assertFalse(app.query_one("#welcome").display)
+    def test_tiny_and_empty_canvases_do_not_crash(self):
+        for raster in h.RASTERIZERS.values():
+            self.assertEqual(raster(self.frame(), 0, 0), [])
+            self.assertEqual(len(raster(self.frame(), 1, 1)), 1)
 
-    async def test_paused_enhanced_frame_redraws_latest_event(self):
-        from rich.text import Text
-        from local_agent.hologram_widget import GraphicsWorker
+    def test_points_stay_within_the_scene(self):
+        for state in h.STATES:
+            frame = self.frame(state, seconds=2.0)
+            for x, y, depth, intensity, role, kind in frame.points:
+                self.assertLessEqual(abs(x), h.EXTENT * 1.25)
+                self.assertLessEqual(abs(y), h.EXTENT * 1.25)
+                self.assertGreaterEqual(intensity, 0)
 
-        class Provider:
-            model = "test"
+    def test_error_flash_distorts(self):
+        clock = FakeClock()
+        director = h.Director(clock)
+        clock.advance(director, 0.3)
+        director.flash("error")
+        clock.advance(director, 0.1)
+        frame = h.Scene().frame(director, clock.t, PALETTE, 14)
+        self.assertGreater(frame.distort, 0.5)
+        red, green, blue = h.effects.hex_rgb(frame.colors[h.FX])
+        self.assertGreater(red, green + 60)  # Easing toward the error color.
 
-        entered = asyncio.Event()
-        release = asyncio.Event()
-        self.addCleanup(release.set)
-        snapshots = []
+    def test_every_theme_renders(self):
+        for name, palette in PALETTES.items():
+            rows_out = h.rasterize_braille(self.frame(palette=palette), 24, 11)
+            self.assertEqual(len(rows_out), 11, name)
 
-        async def delayed_frame(worker, data):
-            snapshots.append(data["state"])
-            if data["state"] == "thinking":
-                entered.set()
-                await release.wait()
-            return Text("SNAPSHOT=" + data["state"])
+    def test_image_render_when_pillow_is_present(self):
+        if importlib.util.find_spec("PIL") is None:
+            self.skipTest("Pillow is not installed")
+        image = h.render_image(self.frame("thinking"), 120, 110)
+        self.assertEqual(image.size, (120, 110))
+        self.assertEqual(image.getpixel((0, 0)), (7, 9, 15))  # Theme background is preserved exactly.
 
-        app = self.ChatApp(Agent(Provider(), State(Path(self.temp.name))), "demo", False,
-                           animated=False,
-                           capabilities=Capabilities(True, True, True, False, False, "mock-bun"))
-        with patch.object(GraphicsWorker, "frame", delayed_frame):
-            async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause()
-                core = app.query_one("#welcome-core")
-                phase = core.scene.phase
-                core.handle_event(AgentEvent("thinking"))
-                async with asyncio.timeout(3):
-                    await entered.wait()
-                core.handle_event(AgentEvent("token", text="Finished"))
-                core.handle_event(AgentEvent("success"))
-                release.set()
-                async with asyncio.timeout(3):
-                    while "SNAPSHOT=success" not in str(core.content):
-                        await pilot.pause(0.05)
-                self.assertEqual(snapshots[-2:], ["thinking", "success"])
-                self.assertFalse(core.animated)
-                self.assertEqual(phase, core.scene.phase)
 
-    async def test_responsive_controls_streaming_and_cleanup(self):
-        release = threading.Event()
-        self.addCleanup(release.set)
+class GovernorTests(unittest.TestCase):
+    def test_steps_down_under_load_and_recovers(self):
+        governor = h.Governor(30)
+        now = 0.0
+        for _ in range(5):
+            now += governor.interval()
+            governor.record(0.02, now)  # 20 ms frames: too slow for 30 fps.
+        self.assertLess(governor.fps, 30)
+        for _ in range(400):
+            now += governor.interval()
+            governor.record(0.001, now)
+        self.assertEqual(governor.fps, 30)
 
-        class Provider:
-            model = "test"
+    def test_late_frames_count_as_strain(self):
+        governor = h.Governor(30)
+        now = 0.0
+        for _ in range(10):
+            now += 0.2  # The event loop delivers frames far later than asked.
+            governor.record(0.001, now)
+        self.assertLess(governor.fps, 30)
 
-            def complete_stream(self, messages, tools, on_token):
-                on_token("Hello ")
-                time.sleep(0.07)
-                on_token("world")
-                release.wait(5)
-                return {"role": "assistant", "content": "Hello world"}
+    def test_ceiling(self):
+        governor = h.Governor(30)
+        governor.set_ceiling(15)
+        self.assertEqual(governor.fps, 15)
+        governor.set_ceiling(4)
+        self.assertLessEqual(governor.fps, 4)
+        governor.set_ceiling(30)
+        self.assertEqual(governor.fps, 30)  # Raising the ceiling jumps straight to it.
 
-        from local_agent.hologram_widget import HologramRenderer
-        cap = Capabilities(True, True, True, False, False, None)
-        app = self.ChatApp(Agent(Provider(), State(Path(self.temp.name))), "demo", False, capabilities=cap)
-        async with app.run_test(size=(120, 40)) as pilot:
-            welcome = app.query_one("#welcome-core", HologramRenderer)
-            orb = app.query_one("#orb", HologramRenderer)
-            self.assertTrue(welcome.active)
-            self.assertFalse(orb.active)
-            field = app.query_one("#prompt")
-            field.value = "hello"
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            self.assertTrue(app.busy)
-            self.assertFalse(welcome.active)
-            self.assertTrue(orb.active)
-            self.assertEqual(app.streaming_text, "Hello world")
-            for command in ("pause", "left", "large", "hide"):
-                field.value = "/hologram " + command
-                await pilot.press("enter")
-            phase = orb.scene.phase
-            await pilot.pause(0.15)
-            self.assertEqual(phase, orb.scene.phase)
-            self.assertFalse(orb.active)
-            self.assertTrue(app.busy)
-            release.set()
-            async with asyncio.timeout(3):
-                while app.busy:
-                    await pilot.pause(0.05)
-            self.assertEqual(str(app.streaming_row.content), "AGENT\nHello world")
-            field.value = "/hologram show"
-            await pilot.press("enter")
-            self.assertTrue(orb.active)
-            await pilot.resize_terminal(40, 14)
-            self.assertFalse(orb.active)
-            self.assertFalse(welcome.active)
-            self.assertTrue(field.display)
-            await pilot.resize_terminal(100, 30)
-            self.assertTrue(orb.active)
-        self.assertIsNone(orb.worker)
-        self.assertFalse(orb.closing)
 
-    async def test_enhanced_failure_does_not_break_input(self):
-        from local_agent.hologram_widget import GraphicsWorker, HologramRenderer
-
-        class Provider:
-            model = "test"
-
-        cap = Capabilities(True, True, True, False, False, "missing-bun")
-        app = self.ChatApp(Agent(Provider(), State(Path(self.temp.name))), "demo", False, capabilities=cap)
-        with patch.object(GraphicsWorker, "frame", side_effect=RuntimeError("GPU unavailable")):
-            async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause(0.2)
-                core = app.query_one("#welcome-core", HologramRenderer)
-                self.assertEqual(core.mode, "ascii")
-                self.assertIn("failed", core.reason)
-                self.assertIsNone(core.worker)
-                await pilot.press("h", "e", "l", "l", "o")
-                self.assertEqual(app.query_one("#prompt").value, "hello")
+class CapabilityTests(unittest.TestCase):
+    def test_choose_renderer(self):
+        choose = h.choose_renderer
+        self.assertEqual(choose("auto", {}, True, None)[0], "braille")
+        self.assertEqual(choose("auto", {}, False, None)[0], "ascii")  # Legacy console glyphs.
+        self.assertEqual(choose("auto", {"TERM": "linux"}, True, None)[0], "ascii")  # Linux VT font.
+        self.assertEqual(choose("braille", {"TERM": "dumb"}, True, None)[0], "ascii")
+        self.assertEqual(choose("ascii", {}, True, None)[0], "ascii")
+        mode, reason = choose("image", {}, True, None)
+        self.assertEqual(mode, "braille")
+        self.assertIn("restart", reason)
+        mode, reason = choose("image", {}, True, {"protocol": None, "error": "no graphics here"})
+        self.assertEqual((mode, "no graphics here" in reason), ("braille", True))
+        self.assertEqual(choose("image", {}, True, {"protocol": "sixel"})[0], "image")
+        self.assertEqual(choose("auto", {"AGENT_HOLOGRAM": "ascii"}, True, None)[0], "ascii")
 
 
 if __name__ == "__main__":

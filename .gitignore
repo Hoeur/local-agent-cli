@@ -1,6 +1,8 @@
 __pycache__/
 .agent/
 .env
+.env.*
+!.env.example
 .venv/
 *.egg-info/
 build/
