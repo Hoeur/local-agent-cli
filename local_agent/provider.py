@@ -1,9 +1,26 @@
-import base64
-import binascii
+"""Model providers.
+
+Every provider takes and returns OpenAI-style chat messages, so the agent never needs to know which
+service it is talking to:
+
+- ChatProvider: the OpenAI chat-completions format (Ollama, DeepSeek, Alibaba Model Studio,
+  OpenRouter, most resellers). Defined here.
+- AnthropicProvider: Claude's Messages API. See provider_anthropic.py.
+- ResponsesProvider: OpenAI's Responses API, needed for Codex models. See provider_responses.py.
+"""
 import json
+import time
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+MAX_BODY = 1_000_000
+MAX_LIST_BODY = 8_000_000  # Hosted model lists (OpenRouter's especially) are large.
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+RETRY_CODES = {429, 500, 502, 503, 504, 529}
+RETRY_DELAYS = (2, 6)  # Seconds before each retry of a rate-limited or overloaded hosted endpoint.
+PING = [{"role": "user", "content": "Reply with the word OK."}]
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -11,25 +28,146 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-class ChatProvider:
-    def __init__(self, base_url: str, model: str, api_key: str | None):
+class StreamingUnsupported(Exception):
+    """The endpoint rejected a streaming request."""
+
+
+def printable(text):
+    return " ".join("".join(char if char.isprintable() else " " for char in str(text)).split())
+
+
+def error_detail(error):
+    """Return the provider's own explanation from an HTTP error body, safe to print, or ""."""
+    try:
+        body = error.read(8192).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - the status code alone is still useful
+        return ""
+    finally:
+        error.close()
+    message = None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        inner = data.get("error", data)
+        if isinstance(inner, dict):
+            message = inner.get("message") or inner.get("msg") or inner.get("type") or inner.get("code")
+        elif isinstance(inner, str):
+            message = inner
+        if not isinstance(message, str):
+            message = data.get("message")
+    elif body.strip() and not body.lstrip().startswith("<"):  # Skip HTML error pages.
+        message = body
+    return printable(message)[:240] if isinstance(message, str) else ""
+
+
+def http_message(code, detail):
+    return f"Model endpoint returned HTTP {code}." + (f" {detail}" if detail else "")
+
+
+def retry_after(headers, default):
+    try:
+        return min(20.0, max(0.0, float(headers.get("retry-after"))))
+    except (TypeError, ValueError):
+        return default
+
+
+class HttpProvider:
+    """Shared HTTP plumbing: URL checks, retries, readable errors, server-sent events."""
+    wire = "?"
+    max_body = MAX_BODY
+
+    def __init__(self, base_url: str, model: str, api_key: str | None, *, max_tokens: int | None = None,
+                 timeout: float = 90):
         url = urlsplit(base_url)
         if url.scheme not in {"http", "https"} or not url.hostname or any(
             (url.username, url.password, url.query, url.fragment)
         ):
             raise ValueError("Set AGENT_BASE_URL to an HTTP(S) API base URL without credentials.")
-        if api_key and url.scheme == "http" and url.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        if api_key and url.scheme == "http" and url.hostname not in LOCAL_HOSTS:
             raise ValueError("Use HTTPS when sending an API key to a remote provider.")
-        self.url = base_url.rstrip("/") + "/chat/completions"
+        self.base_url = base_url.rstrip("/")
         self.model = model
+        self.max_tokens = max_tokens
+        self.timeout = timeout
         self.headers = {"Content-Type": "application/json"}
-        if api_key:
-            self.headers["Authorization"] = f"Bearer {api_key}"
         self.opener = build_opener(NoRedirect())
+        # Hosted services rate-limit and overload; a local server that fails won't do better on retry.
+        self.retries = 0 if url.hostname in LOCAL_HOSTS else len(RETRY_DELAYS)
+        # Streaming is used only when a caller asks for text fragments (the terminal UI does).
+        self.streaming = True
+        self.last_usage = None
 
-    def models(self):
-        request = Request(self.url.removesuffix("chat/completions") + "models", headers=self.headers)
-        data = self.request_json(request)
+    def post(self, url, payload):
+        return Request(url, headers=self.headers, data=json.dumps(payload).encode("utf-8"))
+
+    def open(self, request, streaming_fallback=False):
+        """Open a request, retrying rate limits and overloads before any of the reply is read."""
+        for attempt in range(self.retries + 1):
+            try:
+                return self.opener.open(request, timeout=self.timeout)
+            except HTTPError as error:
+                delay = retry_after(error.headers, RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+                detail = error_detail(error)
+                # "Out of quota" also arrives as 429, and waiting won't fix it.
+                hopeless = any(word in detail.lower() for word in ("quota", "insufficient", "balance", "billing"))
+                if error.code in RETRY_CODES and attempt < self.retries and not hopeless:
+                    time.sleep(delay)
+                    continue
+                if streaming_fallback and error.code in {400, 404, 415, 422, 501}:
+                    raise StreamingUnsupported(detail) from error
+                raise RuntimeError(http_message(error.code, detail)) from error
+            except (URLError, OSError, HTTPException) as error:  # OSError covers timeouts and resets.
+                raise RuntimeError(f"Could not reach the model endpoint: {error or type(error).__name__}") from error
+        raise AssertionError("unreachable")
+
+    def request_json(self, request, limit=None):
+        limit = limit or self.max_body
+        response = self.open(request)
+        try:
+            with response:
+                body = response.read(limit + 1)
+        except (URLError, OSError, HTTPException) as error:
+            raise RuntimeError(f"The model reply was interrupted: {error or type(error).__name__}") from error
+        if len(body) > limit:
+            raise RuntimeError(f"Model response exceeded {limit // 1_000_000} MB.")
+        try:
+            return json.loads(body)
+        except ValueError as error:
+            raise RuntimeError("The endpoint returned invalid JSON.") from error
+
+    def events(self, response):
+        """Yield (event, data) pairs from a server-sent event stream."""
+        event, data, received = None, [], 0
+        try:
+            for raw in response:
+                received += len(raw)
+                if received > self.max_body:
+                    raise RuntimeError(f"Model response exceeded {self.max_body // 1_000_000} MB.")
+                line = raw.decode("utf-8").rstrip("\r\n")
+                if not line:
+                    if data:
+                        yield event, "\n".join(data)
+                    event, data = None, []
+                    continue
+                if line.startswith(":"):
+                    continue
+                field, _, value = line.partition(":")
+                value = value[1:] if value.startswith(" ") else value
+                if field == "event":
+                    event = value
+                elif field == "data":
+                    data.append(value)
+            if data:
+                yield event, "\n".join(data)
+        except UnicodeDecodeError as error:
+            raise RuntimeError("The endpoint returned an invalid stream.") from error
+        except (URLError, OSError, HTTPException) as error:
+            raise RuntimeError(f"The model stream was interrupted: {error or type(error).__name__}") from error
+
+    def list_models(self, url):
+        data = self.request_json(Request(url, headers=self.headers), MAX_LIST_BODY)
         try:
             models = [entry["id"] for entry in data["data"]]
             if not all(isinstance(model, str) for model in models):
@@ -38,117 +176,124 @@ class ChatProvider:
         except (KeyError, TypeError, ValueError) as error:
             raise RuntimeError("The endpoint returned an invalid model list.") from error
 
-    def request_json(self, request, *, max_bytes=1_000_000, timeout=90):
+    def ping_payload(self):
+        return {"model": self.model, "messages": PING}
+
+    def ping_url(self):
+        raise NotImplementedError
+
+    def check(self):
+        """Return (status, detail), where status is "online", "missing" or "offline"."""
+        listed = None
         try:
-            with self.opener.open(request, timeout=timeout) as response:
-                body = response.read(max_bytes + 1)
-        except HTTPError as error:
-            error.close()
-            raise RuntimeError(f"Model endpoint returned HTTP {error.code}.") from error
-        except (URLError, TimeoutError) as error:
-            raise RuntimeError(f"Could not reach the model endpoint: {error}") from error
-        if len(body) > max_bytes:
-            raise RuntimeError(f"Model response exceeded {max_bytes:,} bytes.")
+            listed = self.models()
+            if self.model in listed:
+                return "online", f"Model {self.model!r} is available."
+        except RuntimeError:
+            pass
+        # Some endpoints have no model list, or don't list every alias they serve: send a tiny message.
         try:
-            return json.loads(body)
-        except ValueError as error:
-            raise RuntimeError("The endpoint returned invalid JSON.") from error
+            self.request_json(self.post(self.ping_url(), self.ping_payload()))
+        except RuntimeError as error:
+            if listed is None:
+                return ("missing" if "HTTP 404" in str(error) else "offline"), str(error)
+            return "missing", (f"Model {self.model!r} isn't served here. "
+                               f"Available: {', '.join(listed[:8]) or 'none'}.")
+        return "online", f"Model {self.model!r} answered a test message."
 
-    def complete(self, messages, tools):
-        request = Request(self.url, headers=self.headers, data=json.dumps({
-            "model": self.model, "messages": messages, "tools": tools,
-        }).encode("utf-8"))
-        data = self.request_json(request)
-        return self.validate_completion(data)
 
-    def complete_stream(self, messages, tools, on_token):
-        """Consume bounded SSE frames, assembling tool calls before any execution.
+class ChatProvider(HttpProvider):
+    """OpenAI chat completions: Ollama, DeepSeek, Alibaba Model Studio, OpenRouter, resellers."""
+    wire = "chat"
 
-        Endpoints that ignore streaming may return JSON. Explicit stream rejection
-        falls back to the existing request; broken/partial streams never retry.
+    def __init__(self, base_url: str, model: str, api_key: str | None, **options):
+        super().__init__(base_url, model, api_key, **options)
+        self.url = self.base_url + "/chat/completions"
+        if api_key:
+            self.headers["Authorization"] = f"Bearer {api_key}"
+
+    def models(self):
+        return self.list_models(self.base_url + "/models")
+
+    def ping_url(self):
+        return self.url
+
+    def complete(self, messages, tools, on_text=None):
+        """Return the assistant message for one chat completion.
+
+        on_text(kind, text) is optional. When given and streaming is enabled, the reply is
+        requested as a server-sent event stream and each fragment is passed on as it arrives,
+        with kind "content" or "reasoning". The returned message is validated the same way
+        either way. Providers that reject streaming fall back to a single request.
         """
-        request = Request(self.url, headers=self.headers, data=json.dumps({
-            "model": self.model, "messages": messages, "tools": tools, "stream": True,
-        }).encode("utf-8"))
-        try:
-            response = self.opener.open(request, timeout=90)
-        except HTTPError as error:
-            error.close()
-            if error.code in {400, 422}:
-                return self.complete(messages, tools)
-            raise RuntimeError(f"Model endpoint returned HTTP {error.code}.") from error
-        except (URLError, TimeoutError) as error:
-            raise RuntimeError(f"Could not reach the model endpoint: {error}") from error
-        try:
-            with response:
-                if "text/event-stream" not in response.headers.get("Content-Type", ""):
-                    body = response.read(1_000_001)
-                    if len(body) > 1_000_000:
-                        raise RuntimeError("Model response exceeded 1 MB.")
-                    return self.validate_completion(json.loads(body))
-                content, calls, finish = [], {}, None
-                size = 0
-                data_lines = []
-                ended = False
-                while True:
-                    line = response.readline(65_537)
-                    size += len(line)
-                    if len(line) > 65_536 or size > 1_000_000:
-                        raise RuntimeError("Model stream exceeded its size limit.")
-                    if not line:
-                        break
-                    line = line.decode("utf-8").rstrip("\r\n")
-                    if line.startswith("data:"):
-                        data_lines.append(line[5:].lstrip(" "))
-                    if line or not data_lines:
-                        continue
-                    payload = "\n".join(data_lines)
-                    data_lines.clear()
-                    if payload == "[DONE]":
-                        ended = True
-                        break
-                    chunk = json.loads(payload)
-                    if "error" in chunk:
-                        raise RuntimeError("The provider reported a streaming error.")
-                    for choice in chunk.get("choices", []):
-                        if choice.get("index", 0) != 0:
-                            continue
-                        delta = choice.get("delta") or {}
-                        text = delta.get("content")
-                        if text is not None:
-                            if not isinstance(text, str):
-                                raise ValueError("Invalid content delta")
-                            content.append(text)
-                            if text:
-                                on_token(text)
-                        for part in delta.get("tool_calls") or []:
-                            index = part["index"]
-                            if not isinstance(index, int) or not 0 <= index < 4:
-                                raise ValueError("Invalid tool index")
-                            call = calls.setdefault(index, {"id": "", "type": "function", "function": {
-                                "name": "", "arguments": "",
-                            }})
-                            if "id" in part:
-                                call["id"] += part["id"]
-                            if "type" in part:
-                                call["type"] = part["type"]
-                            for key in ("name", "arguments"):
-                                call["function"][key] += (part.get("function") or {}).get(key, "")
-                        if choice.get("finish_reason") is not None:
-                            finish = choice["finish_reason"]
-                if not ended or finish is None:
-                    raise RuntimeError("The model stream ended before completion.")
-                return self.validate_completion({"choices": [{"finish_reason": finish, "message": {
-                    "content": "".join(content) or None,
-                    "tool_calls": [calls[index] for index in sorted(calls)],
-                }}]})
-        except (ValueError, KeyError, TypeError, AttributeError) as error:
-            raise RuntimeError("Invalid streaming response from the model endpoint.") from error
-        except (OSError, TimeoutError) as error:
-            raise RuntimeError(f"Model stream interrupted: {error}") from error
+        self.last_usage = None
+        payload = {"model": self.model, "messages": messages}
+        if tools:  # Some providers reject an empty tools list.
+            payload["tools"] = tools
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
+        if on_text is not None and self.streaming:
+            try:
+                return self.parse_completion(self.stream_completion(payload, on_text))
+            except StreamingUnsupported:
+                # Only give up on streaming if a plain request works; otherwise it was a real error.
+                result = self.parse_completion(self.request_json(self.post(self.url, payload)))
+                self.streaming = False
+                return result
+        return self.parse_completion(self.request_json(self.post(self.url, payload)))
 
-    @staticmethod
-    def validate_completion(data):
+    def stream_completion(self, payload, on_text):
+        """Request a streamed completion and rebuild it as a regular completion object."""
+        body = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+        response = self.open(self.post(self.url, body), streaming_fallback=True)
+        content, finish, calls = [], None, {}
+        with response:
+            kind = response.headers.get("Content-Type", "")
+            if "json" in kind and "stream" not in kind:
+                # The endpoint ignored stream=True and sent one JSON body.
+                data = json.loads(response.read(self.max_body + 1) or b"null")
+                self.last_usage = usage_of(data)
+                return data
+            try:
+                for _, data in self.events(response):
+                    if data.strip() == "[DONE]":
+                        break
+                    chunk = json.loads(data)
+                    if not isinstance(chunk, dict):
+                        raise ValueError
+                    if "error" in chunk:
+                        detail = chunk["error"].get("message") if isinstance(chunk["error"], dict) else chunk["error"]
+                        raise RuntimeError("The model endpoint reported an error while streaming."
+                                           + (f" {printable(detail)[:240]}" if detail else ""))
+                    self.last_usage = usage_of(chunk) or self.last_usage
+                    for choice in chunk.get("choices") or []:
+                        finish = choice.get("finish_reason") or finish
+                        delta = choice.get("delta") or {}
+                        reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                        if isinstance(reasoning, str) and reasoning:
+                            on_text("reasoning", reasoning)
+                        text = delta.get("content")
+                        if isinstance(text, str) and text:
+                            content.append(text)
+                            on_text("content", text)
+                        for part in delta.get("tool_calls") or []:
+                            entry = calls.setdefault(part.get("index", len(calls)), {
+                                "id": "", "type": "function", "function": {"name": "", "arguments": ""},
+                            })
+                            entry["id"] = part.get("id") or entry["id"]
+                            entry["type"] = part.get("type") or entry["type"]
+                            function = part.get("function") or {}
+                            entry["function"]["name"] += function.get("name") or ""
+                            entry["function"]["arguments"] += function.get("arguments") or ""
+            except (ValueError, AttributeError, TypeError) as error:
+                raise RuntimeError("The endpoint returned an invalid stream.") from error
+        message = {"content": "".join(content) or None}
+        if calls:
+            message["tool_calls"] = [calls[index] for index in sorted(calls)]
+        return {"choices": [{"finish_reason": finish, "message": message}]}
+
+    def parse_completion(self, data):
+        self.last_usage = usage_of(data) or self.last_usage
         try:
             choice = data["choices"][0]
             message = choice["message"]
@@ -156,14 +301,20 @@ class ChatProvider:
             if content is not None and not isinstance(content, str):
                 raise ValueError
             calls = []
-            for call in message.get("tool_calls") or []:
+            for index, call in enumerate(message.get("tool_calls") or []):
                 name = call["function"]["name"]
-                arguments = call["function"]["arguments"]
-                if call["type"] != "function" or not all(
-                    isinstance(field, str) and field for field in (call["id"], name, arguments)
+                # Some local servers omit call ids or send "" for calls with no arguments.
+                call_id = call.get("id") or f"call_{index}"
+                arguments = call["function"].get("arguments")
+                if arguments in (None, ""):
+                    arguments = "{}"
+                elif isinstance(arguments, dict):
+                    arguments = json.dumps(arguments)
+                if call.get("type", "function") != "function" or not all(
+                    isinstance(field, str) and field for field in (call_id, name, arguments)
                 ):
                     raise ValueError
-                calls.append({"id": call["id"], "type": "function", "function": {
+                calls.append({"id": call_id, "type": "function", "function": {
                     "name": name, "arguments": arguments,
                 }})
             if len({call["id"] for call in calls}) != len(calls):
@@ -172,37 +323,34 @@ class ChatProvider:
             raise RuntimeError("Invalid chat completion from the model endpoint.") from error
         if choice.get("finish_reason") in {"length", "content_filter"}:
             raise RuntimeError("The provider returned an incomplete response.")
-        result = {"role": "assistant", "content": content}
-        if calls:
-            result["tool_calls"] = calls
-        return result
+        return assistant_message(content, calls)
 
 
-class ImageProvider(ChatProvider):
-    """Optional compatible Images API adapter. Never follows returned image URLs."""
-    def __init__(self, base_url, model, api_key):
-        super().__init__(base_url, model, api_key)
-        self.url = self.url.removesuffix("/chat/completions") + "/images/generations"
+def assistant_message(content, calls):
+    result = {"role": "assistant", "content": content}
+    if calls:
+        result["tool_calls"] = calls
+    return result
 
-    def generate(self, prompt, *, output_format="png"):
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
-            raise ValueError("Image prompts must contain between 1 and 4,000 characters.")
-        if output_format not in {"png", "jpeg", "webp", "gif"}:
-            raise ValueError("Unsupported image output format.")
-        request = Request(self.url, headers=self.headers, data=json.dumps({
-            "model": self.model, "prompt": prompt, "n": 1, "output_format": output_format,
-        }).encode("utf-8"))
-        response = self.request_json(request, max_bytes=14_000_000, timeout=180)
-        try:
-            encoded = response["data"][0]["b64_json"]
-            if not isinstance(encoded, str):
-                raise ValueError
-            data = base64.b64decode(encoded, validate=True)
-            if not data or len(data) > 10_000_000:
-                raise ValueError
-            from .attachments import image_type
-            image_type(data)
-            return data
-        except (KeyError, IndexError, TypeError, ValueError, binascii.Error) as error:
-            raise RuntimeError("The image endpoint must return a PNG, JPEG, WebP, or GIF in "
-                               "data[0].b64_json, at most 10 MB. URL-only responses are unsupported.") from error
+
+def tool_call(call_id, name, arguments):
+    if isinstance(arguments, dict):
+        arguments = json.dumps(arguments, ensure_ascii=False)
+    if not all(isinstance(field, str) and field for field in (call_id, name)) or not isinstance(arguments, str):
+        raise RuntimeError("The model endpoint returned an invalid tool call.")
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments or "{}"}}
+
+
+def system_text(messages):
+    """Split OpenAI-style messages into the joined system prompt and the rest."""
+    system = [m["content"] for m in messages if m.get("role") == "system" and isinstance(m.get("content"), str)]
+    return "\n\n".join(system), [m for m in messages if m.get("role") != "system"]
+
+
+def usage_of(data):
+    """Return token counts from a completion or stream chunk, if the provider sent them."""
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    counts = {key: usage.get(key) for key in ("prompt_tokens", "completion_tokens", "total_tokens")}
+    return {key: value for key, value in counts.items() if isinstance(value, int)} or None

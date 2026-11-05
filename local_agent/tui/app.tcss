@@ -1,0 +1,419 @@
+/* Local Agent terminal UI. Colors come from the active theme ($primary, $secondary, $accent, plus
+   $user-color, $assistant-color and $muted-color defined in theme.py), so every theme restyles all
+   of this. Spacing scale: 0 / 1 / 2 cells. */
+
+Screen {
+    background: $background;
+    layers: base overlay;
+}
+
+#main {
+    height: 1fr;
+}
+
+/* ── Sidebar ─────────────────────────────────────────── */
+
+#sidebar {
+    width: 34;
+    background: $surface;
+    border-right: tall $panel;
+    padding: 0 0 0 0;
+}
+#sidebar.-overlay {
+    dock: left;
+    layer: overlay;
+    border-right: tall $primary 60%;
+    background: $surface;
+}
+#sidebar-title {
+    height: 2;
+    padding: 1 1 0 1;
+}
+#sidebar-scroll {
+    scrollbar-size-vertical: 1;
+    scrollbar-color: $primary 25%;
+    scrollbar-color-hover: $primary 50%;
+    scrollbar-background: $surface;
+}
+#sidebar Collapsible {
+    background: transparent;
+    border-top: none;
+    padding: 0;
+    margin: 0 0 1 0;
+}
+#sidebar CollapsibleTitle {
+    color: $muted-color;
+    text-style: bold;
+    padding: 0 1;
+}
+#sidebar CollapsibleTitle:hover {
+    color: $primary;
+    background: transparent;
+}
+#sidebar CollapsibleTitle:focus {
+    color: $background;
+    background: $primary;
+}
+#sidebar Collapsible > Contents {
+    padding: 0 0 0 2;
+}
+#session-list {
+    background: transparent;
+    border: none;
+    max-height: 10;
+    padding: 0;
+}
+#session-list > .option-list--option-highlighted {
+    background: $primary 18%;
+}
+#explorer {
+    background: transparent;
+    height: auto;
+    max-height: 16;
+    padding: 0;
+    scrollbar-size-vertical: 1;
+}
+#explorer > .directory-tree--folder {
+    color: $secondary;
+    text-style: bold;
+}
+#explorer > .directory-tree--extension {
+    color: $muted-color;
+}
+#tool-list, #model-info, #library-info {
+    padding: 0 1 0 0;
+}
+
+/* ── Chat ───────────────────────────────────────────── */
+
+#center {
+    width: 1fr;
+    min-width: 30;
+}
+#chat {
+    height: 1fr;
+    padding: 1 2 0 2;
+    scrollbar-size-vertical: 1;
+    scrollbar-color: $primary 40%;
+    scrollbar-color-hover: $primary 70%;
+    scrollbar-background: $background;
+}
+#chat:focus {
+    background-tint: $foreground 2%;
+}
+
+.message {
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+.user {
+    border-left: outer $user-color;
+    background: $user-color 7%;
+    padding: 0 1 0 1;
+    margin-right: 8;
+}
+.assistant {
+    border-left: outer $assistant-color 70%;
+    padding: 0 1;
+}
+.assistant-head {
+    height: 1;
+}
+.assistant-body {
+    height: auto;
+}
+.assistant .segment {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+}
+.assistant Markdown {
+    background: transparent;
+}
+.assistant .segment > *:last-child {
+    margin-bottom: 0;
+}
+.assistant MarkdownFence {
+    margin: 1 0;
+    background: $surface;
+    border-left: tall $secondary 70%;
+}
+.assistant MarkdownBlockQuote {
+    border-left: outer $accent;
+    background: $accent 6%;
+}
+.assistant MarkdownH1, .assistant MarkdownH2, .assistant MarkdownH3 {
+    color: $primary;
+    background: transparent;
+    border: none;
+    content-align: left middle;
+    text-style: bold;
+    margin: 1 0 0 0;
+}
+.thinking {
+    height: 1;
+    margin-top: 0;
+}
+
+.reasoning {
+    background: transparent;
+    border-top: none;
+    padding: 0;
+    margin: 0;
+}
+.reasoning CollapsibleTitle {
+    color: $muted-color;
+    padding: 0;
+}
+.reasoning-body {
+    color: $muted-color;
+    padding: 0 0 0 2;
+}
+
+.tool {
+    height: auto;
+    margin: 0 0 0 0;
+    padding: 0 0 0 1;
+    background: $surface;
+    border-left: tall $secondary 50%;
+}
+.tool-row {
+    height: auto;
+}
+.tool-output {
+    background: transparent;
+    border-top: none;
+    padding: 0;
+    margin: 0;
+}
+.tool-output CollapsibleTitle {
+    color: $muted-color;
+    padding: 0 0 0 2;
+}
+.tool-output Contents {
+    max-height: 20;
+    overflow-y: auto;
+    padding: 0 0 0 2;
+}
+
+.error-card {
+    border-left: outer $error;
+    background: $error 8%;
+}
+.note {
+    height: auto;
+    margin: 0 0 1 0;
+}
+.note.card {
+    padding: 0 2;
+    border-left: outer $secondary 60%;
+    background: $surface;
+}
+.note.divider {
+    color: $muted-color;
+}
+
+/* ── Welcome ───────────────────────────────────────── */
+
+Welcome {
+    height: 1fr;
+    min-height: 6;
+    layers: stars content;
+    align: center middle;
+}
+#stars {
+    layer: stars;
+    position: absolute;
+    offset: 0 0;
+    width: 100%;
+    height: 100%;
+}
+#welcome-content {
+    layer: content;
+    width: auto;
+    height: auto;
+    align-horizontal: center;
+    background: $background;
+    padding: 0 2;
+}
+#tagline {
+    width: 100%;
+    content-align: center middle;
+    margin: 1 0 1 0;
+}
+#welcome-row {
+    width: auto;
+    height: auto;
+}
+#welcome-card {
+    width: auto;
+    height: auto;
+    margin-left: 3;
+    padding-top: 0;
+}
+#welcome-row {
+    align: center middle;
+}
+
+/* ── Holographic core ───────────────────────────────── */
+
+#holo-panel {
+    width: 31;
+    height: 100%;
+    background: $background;
+    border-left: tall $panel;
+    padding: 0 0 0 0;
+}
+#side-holo {
+    width: 100%;
+    height: 14;
+}
+#holo-hud {
+    height: 4;
+    padding: 0 1;
+    margin-top: 1;
+}
+.hero {
+    width: 44;
+    height: 20;
+}
+#welcome-row .hero {
+    margin: 0;
+}
+
+/* ── Composer ───────────────────────────────────────── */
+
+#composer-area {
+    height: auto;
+    padding: 0 2 0 2;
+}
+#suggestions {
+    height: auto;
+    max-height: 9;
+    background: $surface;
+    border: round $primary 50%;
+    padding: 0;
+    margin: 0 0 0 0;
+    scrollbar-size-vertical: 1;
+}
+#suggestions > .option-list--option-highlighted {
+    background: $primary 22%;
+}
+#composer {
+    height: auto;
+    min-height: 3;
+    max-height: 12;
+    border: round $panel;
+    background: $surface;
+    padding: 0 1;
+}
+#composer:focus {
+    border: round $primary;
+    background-tint: $primary 3%;
+}
+#composer .text-area--cursor-line {
+    background: transparent;
+}
+
+/* ── Header and status ──────────────────────────────── */
+
+TopBar {
+    background: $background;
+}
+StatusBar {
+    background: $surface;
+}
+
+/* ── Notifications ──────────────────────────────────── */
+
+Toast {
+    background: $panel;
+    border-left: outer $primary;
+    padding: 0 1;
+    max-width: 50;
+}
+Toast.-information {
+    border-left: outer $primary;
+}
+Toast.-information .toast--title {
+    color: $primary;
+}
+Toast.-warning {
+    border-left: outer $warning;
+}
+Toast.-warning .toast--title {
+    color: $warning;
+}
+Toast.-error {
+    border-left: outer $error;
+}
+Toast.-error .toast--title {
+    color: $error;
+}
+
+/* ── Dialogs ────────────────────────────────────────── */
+
+ModalScreen.modal {
+    align: center middle;
+    background: $background 70%;
+}
+.dialog {
+    width: 80%;
+    max-width: 110;
+    height: auto;
+    max-height: 85%;
+    background: $surface;
+    border: round $primary;
+    padding: 1 2;
+}
+.dialog-title {
+    margin-bottom: 1;
+}
+.dialog-body {
+    height: auto;
+    max-height: 30;
+    margin-bottom: 1;
+}
+.dialog.preview, .dialog.help {
+    height: 85%;
+}
+.dialog.preview .dialog-body, .dialog.help .dialog-body {
+    height: 1fr;
+    max-height: 100%;
+}
+.dialog-buttons {
+    height: auto;
+    align-horizontal: right;
+}
+.dialog-buttons Button {
+    margin-left: 2;
+    min-width: 14;
+}
+.dialog.help Markdown {
+    background: transparent;
+}
+
+CommandPalette > Vertical {
+    background: $surface;
+    border: round $primary;
+}
+
+/* ── Small terminals ────────────────────────────────── */
+
+Screen.-tiny #chat {
+    padding: 0 1;
+}
+Screen.-tiny #composer-area {
+    padding: 0 1;
+}
+Screen.-tiny .user {
+    margin-right: 0;
+}
+Screen.-tiny .dialog {
+    width: 100%;
+    padding: 0 1;
+}
+Screen.-narrow .user {
+    margin-right: 2;
+}
