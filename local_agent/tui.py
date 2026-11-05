@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import time
 
@@ -10,6 +11,8 @@ from textual.widgets import Input, Static
 from rich.text import Text
 
 from .events import AgentEvent
+from .attachments import message_text
+from .file_commands import FILE_HELP, FileCommands
 from .hologram import Capabilities
 from .hologram_widget import HologramRenderer
 
@@ -27,6 +30,10 @@ TOOL_LABELS = {
     "forget": "Stage memory removal",
     "save_skill": "Stage skill",
     "delete_skill": "Stage skill removal",
+    "create_artifact": "Create artifact",
+    "read_artifact": "Read artifact",
+    "list_artifacts": "List artifacts",
+    "generate_image": "Generate image",
 }
 TURN_LABELS = {
     "user": ("YOU", CYAN),
@@ -126,11 +133,13 @@ class ChatApp(App[int]):
     #prompt:focus { border: round #62edff; }
     """
 
-    def __init__(self, agent, session, learn, *, hologram="auto", animated=True, capabilities=None, image_factory=None):
+    def __init__(self, agent, session, learn, *, hologram="auto", animated=True, capabilities=None,
+                 image_factory=None, attachments=()):
         super().__init__()
         self.agent = agent
         self.session = session
         self.learn = learn
+        self.files = FileCommands(agent.state, attachments)
         self.busy = False
         _, self.history = agent.state.history(session)
         self.welcome = not bool(self.history)
@@ -167,7 +176,7 @@ class ChatApp(App[int]):
         transcript.anchor()
         for message in self.history:
             if message["role"] in {"user", "assistant"} and message.get("content"):
-                self.write_turn(message["role"], message["content"])
+                self.write_turn(message["role"], message_text(message))
         self.history.clear()
         self.query_one(Input).focus()
         self.layout_hologram()
@@ -197,6 +206,7 @@ class ChatApp(App[int]):
         self.query_one("#status-lines", Static).update(Text.assemble(
             ("WORKSPACE  ", MUTED), files, ("\nLEARNING   ", MUTED), learning,
             ("\nSTATE      ", MUTED), ("WORKING" if self.busy else state, color),
+            ("\nATTACHED   ", MUTED), str(len(self.files.pending)),
         ))
         self.query_one("#shortcuts", Static).update(Text.assemble(
             (state, color), ("   /help  /hologram  /sessions  /exit", MUTED),
@@ -223,12 +233,22 @@ class ChatApp(App[int]):
         if self.busy and prompt not in {"/help", "/sessions", "/exit"}:
             return
         event.input.clear()
+        try:
+            output = self.files.handle(prompt)
+        except (OSError, ValueError, RuntimeError) as error:
+            self.write_turn("system", str(error))
+            return
+        if output is not None:
+            self.write_turn("system", output)
+            self.update_status()
+            return
         if prompt == "/exit":
             self.action_close_chat(0)
         elif prompt == "/help":
             self.write_turn("system", "Enter sends a prompt. Page Up and Page Down scroll the chat.\n"
                             "/sessions lists saved chats. /exit closes this view.\n"
-                            "/hologram controls the AI core. Ctrl+H hides it; Ctrl+Left/Right rotates it.")
+                            "/hologram controls the AI core. Ctrl+H hides it; Ctrl+Left/Right rotates it.\n"
+                            + FILE_HELP)
         elif prompt == "/sessions":
             try:
                 sessions = self.agent.state.sessions()
@@ -243,12 +263,14 @@ class ChatApp(App[int]):
             self.streaming_row = None
             self.streaming_text = ""
             self.write_turn("user", prompt)
+            if self.files.pending:
+                self.write_turn("system", "Attached: " + ", ".join(path.name for path in self.files.pending))
             self.busy = True
             self.update_status()
-            self.run_turn(prompt)
+            self.run_turn(prompt, tuple(self.files.pending))
 
     @work(thread=True)
-    def run_turn(self, prompt):
+    def run_turn(self, prompt, attachments=()):
         pending = []
         last = time.monotonic()
 
@@ -268,6 +290,7 @@ class ChatApp(App[int]):
         try:
             response = self.agent.turn(
                 self.session, prompt, self.learn,
+                attachments=attachments,
                 on_tool=lambda *args: self.post_message(ToolFinished(*args)),
                 on_event=observe,
             )
@@ -280,7 +303,11 @@ class ChatApp(App[int]):
         event = message.event
         for core in self.query(HologramRenderer):
             core.handle_event(event)
-        if event.kind == "thinking":
+        if event.kind == "artifact":
+            item = json.loads(event.text)
+            self.write_turn("system", f"Artifact: {item['name']}\nID: {item['id']}\n"
+                            f"Path: {item['path']}\nUse /open {item['id']} to preview.")
+        elif event.kind == "thinking":
             self.streaming_row = None
             self.streaming_text = ""
         elif event.kind == "token":
@@ -298,6 +325,8 @@ class ChatApp(App[int]):
 
     def on_turn_finished(self, event: TurnFinished):
         self.busy = False
+        if not event.failed:
+            self.files.pending.clear()
         self.update_status()
         if self.streaming_row is not None and not event.failed:
             self.streaming_row.update(Text.assemble(("AGENT\n", f"bold {VIOLET}"), safe_text(event.response)))

@@ -69,7 +69,10 @@ class AgentTests(unittest.TestCase):
         )
         Agent(provider, self.state).turn("first", "Remember my style")
         messages, tools = provider.requests[-1]
-        self.assertEqual([entry["function"]["name"] for entry in tools], ["read_skill"])
+        names = {entry["function"]["name"] for entry in tools}
+        self.assertIn("read_skill", names)
+        self.assertNotIn("remember", names)
+        self.assertNotIn("save_skill", names)
         self.assertIn("error", json.loads(messages[-1]["content"]))
         self.assertEqual(self.state.library("memory"), {})
 

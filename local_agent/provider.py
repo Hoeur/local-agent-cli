@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -36,17 +38,17 @@ class ChatProvider:
         except (KeyError, TypeError, ValueError) as error:
             raise RuntimeError("The endpoint returned an invalid model list.") from error
 
-    def request_json(self, request):
+    def request_json(self, request, *, max_bytes=1_000_000, timeout=90):
         try:
-            with self.opener.open(request, timeout=90) as response:
-                body = response.read(1_000_001)
+            with self.opener.open(request, timeout=timeout) as response:
+                body = response.read(max_bytes + 1)
         except HTTPError as error:
             error.close()
             raise RuntimeError(f"Model endpoint returned HTTP {error.code}.") from error
         except (URLError, TimeoutError) as error:
             raise RuntimeError(f"Could not reach the model endpoint: {error}") from error
-        if len(body) > 1_000_000:
-            raise RuntimeError("Model response exceeded 1 MB.")
+        if len(body) > max_bytes:
+            raise RuntimeError(f"Model response exceeded {max_bytes:,} bytes.")
         try:
             return json.loads(body)
         except ValueError as error:
@@ -174,3 +176,33 @@ class ChatProvider:
         if calls:
             result["tool_calls"] = calls
         return result
+
+
+class ImageProvider(ChatProvider):
+    """Optional compatible Images API adapter. Never follows returned image URLs."""
+    def __init__(self, base_url, model, api_key):
+        super().__init__(base_url, model, api_key)
+        self.url = self.url.removesuffix("/chat/completions") + "/images/generations"
+
+    def generate(self, prompt, *, output_format="png"):
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
+            raise ValueError("Image prompts must contain between 1 and 4,000 characters.")
+        if output_format not in {"png", "jpeg", "webp", "gif"}:
+            raise ValueError("Unsupported image output format.")
+        request = Request(self.url, headers=self.headers, data=json.dumps({
+            "model": self.model, "prompt": prompt, "n": 1, "output_format": output_format,
+        }).encode("utf-8"))
+        response = self.request_json(request, max_bytes=14_000_000, timeout=180)
+        try:
+            encoded = response["data"][0]["b64_json"]
+            if not isinstance(encoded, str):
+                raise ValueError
+            data = base64.b64decode(encoded, validate=True)
+            if not data or len(data) > 10_000_000:
+                raise ValueError
+            from .attachments import image_type
+            image_type(data)
+            return data
+        except (KeyError, IndexError, TypeError, ValueError, binascii.Error) as error:
+            raise RuntimeError("The image endpoint must return a PNG, JPEG, WebP, or GIF in "
+                               "data[0].b64_json, at most 10 MB. URL-only responses are unsupported.") from error

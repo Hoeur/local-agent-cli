@@ -3,11 +3,16 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from .artifacts import ArtifactStore
+from .attachments import AttachmentStore
+
 
 class State:
     def __init__(self, directory: Path):
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "state.sqlite3"
+        self.attachments = AttachmentStore(directory / "attachments")
+        self.artifacts = ArtifactStore(directory / "artifacts")
         with closing(self.connect()) as db, db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS turns (
