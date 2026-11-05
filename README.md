@@ -1,6 +1,6 @@
 # Local Agent
 
-A standalone Python implementation of the core Hermes Agent workflow. A named CLI chat sends messages to an OpenAI-compatible model, runs registered tools, and passes their results back until the model replies. SQLite stores completed turns, durable memories, and reusable skills.
+A standalone Python CLI agent with persistent conversations, memory, and reusable skills. A named chat sends messages to an OpenAI-compatible model, runs registered tools, and passes their results back until the model replies. SQLite stores completed turns, durable memories, and reusable skills.
 
 ## Run on Windows
 
@@ -63,7 +63,3 @@ python -m unittest discover -s tests -v
 ```
 
 Live verification with Ollama and `qwen3:0.6b` covered memory creation, recall in another session, skill creation, loading the saved skill, and reading a workspace file through interactive chat. Session listing and transcript viewing also passed. Test prompts used Qwen's `/no_think` suffix. Automated regression checks cover persistence, rollback, disabled learning, stale session writes, tool limits, context retention, and workspace boundaries.
-
-## Hermes reference
-
-The implementation follows Hermes's documented model/tool loop, persistent sessions, and on-demand skill loading. The upstream conversation loop, tool registry, and session store were inspected at revision `1fcc57e6d23052e46265efc30b57c7e9a971e08b`. This project implements its own CLI, provider adapter, and data format. [Hermes architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) · [Upstream source](https://github.com/NousResearch/hermes-agent/tree/1fcc57e6d23052e46265efc30b57c7e9a971e08b)
