@@ -277,7 +277,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
             await pilot.pause(0.1)
             self.assertFalse(app.busy)
-            self.assertEqual(app.file_commands.pending, [notes.resolve()])
+            self.assertEqual(app.file_commands.pending, [notes])
             self.assertTrue(app.query_one(AttachmentBar).display)
             provider.release.set()
 
