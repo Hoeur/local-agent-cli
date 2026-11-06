@@ -132,7 +132,24 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(app.query_one(StatusBar).completion_tokens, 0)
         self.assertEqual(self.state.sessions(), [("s", 1)])
         _, tools = provider.requests[0]
-        self.assertEqual([tool["function"]["name"] for tool in tools], ["read_skill", "todo", "session_search"])
+        self.assertEqual([tool["function"]["name"] for tool in tools],
+                         ["read_skill", "todo", "session_search", "create_artifact", "list_artifacts", "read_artifact"])
+
+    async def test_attachment_queue_survives_failure_and_clears_after_commit(self):
+        notes = self.root / "some notes.txt"
+        notes.write_text("Test attachment content", encoding="utf-8")
+        provider = StreamingFake(RuntimeError("Test failure"), text("Received"))
+        app = self.make(provider)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.send(pilot, app, f'/attach "{notes}"')
+            self.assertEqual(app.file_commands.pending, [notes])
+            await self.send(pilot, app, "Read the notes")
+            await self.wait_idle(pilot, app)
+            self.assertEqual(app.file_commands.pending, [notes])
+            await self.send(pilot, app, "Try again")
+            await self.wait_idle(pilot, app)
+            self.assertFalse(app.file_commands.pending)
+        self.assertIn("Test attachment content", provider.requests[1][0][-1]["content"])
 
     async def test_tool_calls_show_status(self):
         from local_agent.tui.widgets import ToolCall

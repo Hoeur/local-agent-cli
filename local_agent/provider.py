@@ -8,6 +8,7 @@ service it is talking to:
 - AnthropicProvider: Claude's Messages API. See provider_anthropic.py.
 - ResponsesProvider: OpenAI's Responses API, needed for Codex models. See provider_responses.py.
 """
+import base64
 import json
 import time
 from http.client import HTTPException
@@ -324,6 +325,34 @@ class ChatProvider(HttpProvider):
         if choice.get("finish_reason") in {"length", "content_filter"}:
             raise RuntimeError("The provider returned an incomplete response.")
         return assistant_message(content, calls)
+
+
+class ImageProvider(HttpProvider):
+    """OpenAI-compatible image generation with an inline response and no URL fetches."""
+
+    def __init__(self, base_url, model, api_key):
+        super().__init__(base_url, model, api_key, timeout=180)
+        self.url = self.base_url + "/images/generations"
+        self.retries = 0  # A retry could generate and bill for another image.
+        if api_key:
+            self.headers["Authorization"] = f"Bearer {api_key}"
+
+    def generate(self, prompt, *, output_format):
+        from .attachments import image_type
+
+        request = self.post(self.url, {
+            "model": self.model, "prompt": prompt, "n": 1, "output_format": output_format,
+        })
+        response = self.request_json(request, limit=14_000_000)
+        try:
+            encoded = response["data"][0]["b64_json"]
+            data = base64.b64decode(encoded, validate=True)
+            if len(data) > 10_000_000:
+                raise ValueError("Image exceeds 10 MB.")
+            image_type(data)
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            raise RuntimeError("Expected a base64 image in data[0].b64_json, at most 10 MB.") from error
+        return data
 
 
 def assistant_message(content, calls):

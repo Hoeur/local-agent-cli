@@ -3,6 +3,9 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from .artifacts import ArtifactStore
+from .attachments import AttachmentStore
+
 # Bump when the tables change, and add the upgrade step to State.__init__.
 SCHEMA_VERSION = 2
 STORE_LIMIT = 20
@@ -12,6 +15,8 @@ class State:
     def __init__(self, directory: Path):
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "state.sqlite3"
+        self.attachments = AttachmentStore(directory / "attachments")
+        self.artifacts = ArtifactStore(directory / "artifacts")
         with closing(self.connect()) as db, db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:

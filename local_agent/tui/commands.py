@@ -40,6 +40,12 @@ COMMANDS = [
     Command("provider", "/provider [name]", "List model profiles, or switch to one (Claude, DeepSeek, Alibaba...)"),
     Command("model", "/model [name]", "List this endpoint's models, or switch model"),
     Command("copy", "/copy", "Copy the last reply to the clipboard"),
+    Command("attach", "/attach <path>", "Queue an image or text file", False),
+    Command("attachments", "/attachments", "List queued attachments"),
+    Command("detach", "/detach", "Clear queued attachments"),
+    Command("artifacts", "/artifacts", "List generated artifacts"),
+    Command("artifact", "/artifact <id>", "Read a generated artifact", False),
+    Command("open", "/open <id>", "Open a generated artifact in a browser preview", False),
     Command("exit", "/exit", "Quit"),
 ]
 BY_NAME = {command.name: command for command in COMMANDS}

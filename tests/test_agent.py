@@ -88,7 +88,8 @@ class AgentTests(unittest.TestCase):
         )
         Agent(provider, self.state).turn("first", "Remember my style")
         messages, tools = provider.requests[-1]
-        self.assertEqual([entry["function"]["name"] for entry in tools], ["read_skill", "todo", "session_search"])
+        self.assertEqual([entry["function"]["name"] for entry in tools],
+                         ["read_skill", "todo", "session_search", "create_artifact", "list_artifacts", "read_artifact"])
         self.assertIn("error", json.loads(messages[-1]["content"]))
         self.assertEqual(self.state.library("memory"), {})
 
@@ -158,7 +159,7 @@ class AgentTests(unittest.TestCase):
     def test_last_round_asks_for_text_without_tools(self):
         provider = ScriptedProvider(*[tool_call("read_skill", name="missing")] * 6, text("Final answer."))
         self.assertEqual(Agent(provider, self.state).turn("s", "Hi"), "Final answer.")
-        self.assertEqual([len(tools) for _, tools in provider.requests], [3] * 6 + [0])
+        self.assertEqual([bool(tools) for _, tools in provider.requests], [True] * 6 + [False])
         self.assertEqual(self.state.sessions(), [("s", 1)])
 
     def test_last_round_keeps_text_and_drops_unanswerable_calls(self):

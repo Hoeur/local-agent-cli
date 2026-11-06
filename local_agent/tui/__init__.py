@@ -18,7 +18,7 @@ def probe_images():
     try:
         from textual_image import renderable, widget
     except ImportError:
-        return {"protocol": None, "error": "install the hologram-image extra (textual-image and Pillow, Python 3.12+)"}
+        return {"protocol": None, "error": "install the hologram-image extra (textual-image and Pillow)"}
     except Exception as error:  # noqa: BLE001 - a failed probe must never stop the app
         return {"protocol": None, "error": f"terminal probe failed: {error}"}
     try:

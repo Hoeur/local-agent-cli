@@ -103,6 +103,13 @@ def convert_messages(messages):
         role, content = message.get("role"), message.get("content")
         if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
             items.append({"role": role, "content": content})
+        elif role == "user" and isinstance(content, list):
+            parts = [
+                {"type": "input_text", "text": part["text"]} if part["type"] == "text"
+                else {"type": "input_image", "image_url": part["image_url"]["url"], "detail": "auto"}
+                for part in content
+            ]
+            items.append({"role": role, "content": parts})
         if role == "assistant":
             for call in message.get("tool_calls") or []:
                 items.append({"type": "function_call", "call_id": call["id"], "name": call["function"]["name"],

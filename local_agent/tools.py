@@ -28,7 +28,7 @@ from html.parser import HTMLParser
 from itertools import islice
 from pathlib import Path, PureWindowsPath
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
 from urllib.request import HTTPHandler, HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 
@@ -61,6 +61,12 @@ _DEFINITIONS = {
                  "starting with [ ] pending, [>] in progress or [x] done. Omit items to view it.",
                  optional={"items": text(4000, empty=True)}),
     "session_search": tool("Search earlier conversations for words.", {"query": text(200)}),
+    "create_artifact": tool("Save a generated HTML, Markdown, text, CSV, JSON or SVG artifact.",
+                            {"name": text(100), "content": text(24_000)}),
+    "list_artifacts": tool("List saved artifacts and their IDs."),
+    "read_artifact": tool("Read a saved text artifact or get image metadata by ID.", {"id": text(32)}),
+    "generate_image": tool("Generate an image artifact when the user asks for one.",
+                           {"name": text(100), "prompt": text(4000)}),
     "remember": tool("Save a user-approved durable preference or fact.", {"name": text(64), "value": text(300)}),
     "forget": tool("Remove a saved memory when the user asks.", {"name": text(64)}),
     "save_skill": tool("Save a user-approved reusable workflow.",
@@ -89,6 +95,8 @@ FIELDS = {name: fields for name, (_, fields) in _DEFINITIONS.items()}
 
 TOOLSETS = {
     "core": ("read_skill", "todo", "session_search"),
+    "artifacts": ("create_artifact", "list_artifacts", "read_artifact"),
+    "image": ("generate_image",),
     "learn": ("remember", "forget", "save_skill", "delete_skill"),
     "workspace": ("list_files", "read_file", "search_files"),
     "write": ("write_file", "patch"),
@@ -97,9 +105,10 @@ TOOLSETS = {
 }
 
 
-def tool_names(learn=False, workspace=False, write=False, shell=False, web=False):
+def tool_names(learn=False, workspace=False, write=False, shell=False, web=False, image=False):
     """The tools a turn offers, in a stable order."""
-    enabled = {"core": True, "learn": learn, "workspace": workspace, "write": write, "shell": shell, "web": web}
+    enabled = {"core": True, "artifacts": True, "image": image, "learn": learn,
+               "workspace": workspace, "write": write, "shell": shell, "web": web}
     return [name for group, names in TOOLSETS.items() if enabled[group] for name in names]
 
 
@@ -567,7 +576,7 @@ class PublicWebHandler(HTTPHandler, HTTPSHandler):
         return super().do_open(pinned_connection, request, **kwargs)
 
 
-def fetch(url, allow_private=False, limit=2_000_000, timeout=20):
+def fetch(url, allow_private=False, limit=2_000_000, timeout=20, *, user_agent=USER_AGENT):
     """GET a URL, following up to five redirects and checking each hop. Returns (url, type, bytes)."""
     handlers = () if allow_private else (ProxyHandler({}), PublicWebHandler())
     opener = build_opener(NoRedirect(), *handlers)
@@ -575,7 +584,7 @@ def fetch(url, allow_private=False, limit=2_000_000, timeout=20):
         parts = urlsplit(url)
         if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username is not None:
             raise ValueError("Use an http or https URL without credentials.")
-        request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,text/plain,*/*;q=0.5"})
+        request = Request(url, headers={"User-Agent": user_agent, "Accept": "text/html,text/plain,*/*;q=0.5"})
         try:
             with opener.open(request, timeout=timeout) as response:
                 body = response.read(limit + 1)
@@ -678,11 +687,28 @@ class SearchResults(HTMLParser):
 
 
 SEARCH_URL = "https://html.duckduckgo.com/html/"
+WIKIPEDIA_SEARCH_URL = "https://en.wikipedia.org/w/rest.php/v1/search/page"
+
+
+def wikipedia_search(query, limit):
+    url = WIKIPEDIA_SEARCH_URL + "?" + urlencode({"q": query, "limit": limit})
+    _, _, body = fetch(url, user_agent="local-agent-cli/0.3 (https://github.com/Hoeur/local-agent-cli)")
+    try:
+        pages = json.loads(body)["pages"]
+        return [{"title": page["title"][:300], "url": "https://en.wikipedia.org/wiki/" + quote(page["key"], safe=""),
+                 "snippet": (page.get("description") or "")[:300]} for page in pages[:limit]]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Wikipedia search returned an unexpected response.") from error
 
 
 def web_search(query, limit=6, search_url=None, allow_private=False):
-    _, _, body = fetch((search_url or os.environ.get("AGENT_SEARCH_URL") or SEARCH_URL) + "?" + urlencode({"q": query}),
-                       allow_private)
+    endpoint = search_url or os.environ.get("AGENT_SEARCH_URL") or SEARCH_URL
+    query_string = urlencode({"q": query})
+    separator = "&" if "?" in endpoint else "?"
+    _, _, body = fetch(endpoint + separator + query_string, allow_private)
+    if endpoint == SEARCH_URL and 'id="challenge-form"' in body:
+        return {"results": wikipedia_search(query, limit),
+                "note": "DuckDuckGo blocked automated search. Results are limited to English Wikipedia."}
     parser = SearchResults()
     parser.feed(body)
     results = []

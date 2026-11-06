@@ -127,7 +127,20 @@ def convert_messages(messages):
     for message in messages:
         role, content = message.get("role"), message.get("content")
         if role == "user":
-            add("user", [{"type": "text", "text": content if isinstance(content, str) and content else "(empty)"}])
+            if isinstance(content, list):
+                blocks = []
+                for part in content:
+                    if part["type"] == "text":
+                        blocks.append(part)
+                    else:
+                        url = part["image_url"]["url"]
+                        media_type, data = url.removeprefix("data:").split(";base64,", 1)
+                        blocks.append({"type": "image", "source": {
+                            "type": "base64", "media_type": media_type, "data": data,
+                        }})
+                add("user", blocks)
+            else:
+                add("user", [{"type": "text", "text": content if isinstance(content, str) and content else "(empty)"}])
         elif role == "assistant":
             blocks = [{"type": "text", "text": content}] if isinstance(content, str) and content.strip() else []
             for call in message.get("tool_calls") or []:

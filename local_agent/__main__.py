@@ -9,6 +9,7 @@ from pathlib import Path
 from .agent import MAX_TOOL_ROUNDS, Agent
 from . import providers
 from .config import DEFAULT_CONTEXT_CHARS, load_config, parse_context_chars, read_settings, save_config, set_active
+from .file_commands import artifact_list, artifact_text
 from .state import State
 
 
@@ -89,8 +90,12 @@ def setup_profile(args):
     profile = {"profile": name, "provider": provider, "base_url": base_url, "model": model, "wire": args.wire,
                "max_tokens": args.max_tokens}
     providers.make_provider(profile, require_key=False)  # Validates the URL and format.
+    if args.image_base_url:
+        from .provider import ImageProvider
+
+        ImageProvider(args.image_base_url.strip(), args.image_model or "unused", None)
     save_config(args.data_dir, base_url, model, context_chars, provider=provider, wire=args.wire, name=name,
-                max_tokens=args.max_tokens)
+                max_tokens=args.max_tokens, image_model=args.image_model, image_base_url=args.image_base_url)
     print(f"Saved profile {name!r} ({preset.label}, model {model}) and made it active.")
     key, source = providers.resolve_key(profile)
     if preset.key_env and not key and provider not in {"custom"}:
@@ -175,6 +180,8 @@ def main(argv=None):
     setup.add_argument("--provider", help="ollama (default), anthropic, openai, deepseek, alibaba, openrouter, custom...")
     setup.add_argument("--model", help="Model name; cloud providers have a default")
     setup.add_argument("--base-url", help="API base URL; needed for custom, optional otherwise")
+    setup.add_argument("--image-model", help="Optional image generation model (empty disables it)")
+    setup.add_argument("--image-base-url", help="Optional base URL for image generation (defaults to chat URL)")
     setup.add_argument("--wire", choices=sorted(providers.WIRES),
                        help="API format for custom endpoints: chat (OpenAI-style, default), anthropic or responses")
     setup.add_argument("--name", help="Profile name (default: the provider name)")
@@ -203,6 +210,7 @@ def main(argv=None):
     history.add_argument("session")
     chat = commands.add_parser("chat", help="Start or resume a named chat")
     chat.add_argument("--session", default="default")
+    chat.add_argument("--attach", action="append", default=[], type=Path, help="Attach an image or UTF-8 file")
     chat.add_argument("--workspace", type=Path, help="Allow the model to read files in this directory")
     chat.add_argument("--write", action="store_true", help="Allow file changes in the workspace (each one approved)")
     chat.add_argument("--shell", action="store_true", help="Allow shell commands in the workspace (each one approved)")
@@ -213,10 +221,14 @@ def main(argv=None):
                       help="Save memory and skill changes and allow actions without asking "
                            "(dangerous commands still ask)")
     chat.add_argument("--max-rounds", type=int, default=MAX_TOOL_ROUNDS,
-                      help=f"Tool rounds per turn, 1 to 50 (default {MAX_TOOL_ROUNDS})")
+                      help=f"Tool rounds per turn, 0 to 50 (default {MAX_TOOL_ROUNDS}); 0 disables tools")
     chat.add_argument("--plain", action="store_true", help="Use the line-based interface instead of the full-screen UI")
     chat.add_argument("--no-stream", action="store_true", help="Request whole replies instead of streaming them")
     chat.add_argument("prompt", nargs="?", help="Send one message, or omit to chat interactively")
+    commands.add_parser("artifacts", help="List generated artifacts")
+    artifact = commands.add_parser("artifact", help="Read or preview a generated artifact")
+    artifact.add_argument("id")
+    artifact.add_argument("--open", action="store_true", help="Open an isolated browser preview")
     commands.add_parser("memory", help="Show saved memories")
     remember = commands.add_parser("remember", help="Save a memory yourself")
     remember.add_argument("name")
@@ -262,6 +274,14 @@ def main(argv=None):
             if args.command == "sessions":
                 for session, count in state.sessions():
                     print(f"{session}  {count} turns")
+            elif args.command in {"artifacts", "artifact"}:
+                if args.command == "artifacts":
+                    output = artifact_list(state.artifacts)
+                elif args.open:
+                    output = f"Opened artifact preview: {state.artifacts.preview(args.id, open_browser=True)}"
+                else:
+                    output = artifact_text(state.artifacts, args.id)
+                print("\n".join(printable(line) for line in output.splitlines()))
             elif args.command == "history":
                 found = False
                 for message in state.transcript(args.session):
@@ -318,18 +338,19 @@ def main(argv=None):
         check_name(args.session, "Session")
         if args.all:
             args.learn = args.write = args.shell = args.web = True
-        if not 1 <= args.max_rounds <= 50:
-            raise ValueError("Choose between 1 and 50 tool rounds.")
+        if not 0 <= args.max_rounds <= 50:
+            raise ValueError("Choose between 0 and 50 tool rounds.")
         if (args.write or args.shell) and args.workspace is None:
             raise ValueError("--write and --shell need --workspace, the directory they may change.")
         approve = (lambda changes: True) if args.yes else confirm_changes
         confirm = auto_confirm() if args.yes else confirm_action
         options = {"write": args.write, "shell": args.shell, "web": args.web, "max_rounds": args.max_rounds}
-        agent = Agent(provider, State(args.data_dir), args.workspace, config["context_chars"], approve,
-                      confirm=confirm, **options)
+        state = State(args.data_dir)
+        agent = Agent(provider, state, args.workspace, config["context_chars"], approve,
+                      confirm=confirm, image_provider=providers.make_image_provider(config), **options)
         if args.prompt is not None:
             provider.streaming = False
-            print(agent.turn(args.session, args.prompt, args.learn))
+            print(agent.turn(args.session, args.prompt, args.learn, attachments=args.attach))
             return 0
 
         from . import plain, tui
@@ -337,12 +358,12 @@ def main(argv=None):
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
         if interactive and not args.plain and os.environ.get("AGENT_UI", "").lower() != "plain" and tui.available():
             provider.streaming = not args.no_stream
-            return tui.run(provider, State(args.data_dir), args.data_dir, config, args.session, args.workspace,
-                           args.learn, args.yes, **options)
+            return tui.run(provider, state, args.data_dir, config, args.session, args.workspace,
+                           args.learn, args.yes, attachments=args.attach, **options)
         provider.streaming = False  # The line-based chat prints whole replies.
         return plain.chat_loop(agent, args.session, args.learn, config["model"], printable, agent.approve,
                                (OSError, RuntimeError, ValueError, sqlite3.Error),
-                               tui_hint=interactive and not args.plain and not tui.available())
+                               tui_hint=interactive and not args.plain and not tui.available(), attachments=args.attach)
     except EOFError:
         return 0
     except KeyboardInterrupt:
