@@ -7,7 +7,7 @@ from .artifacts import ArtifactStore
 from .attachments import AttachmentStore
 
 # Bump when the tables change, and add the upgrade step to State.__init__.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STORE_LIMIT = 20
 
 
@@ -21,7 +21,8 @@ class State:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise RuntimeError("This data directory was created by a newer version of Local Agent.")
-            # Version 0 and 1 (before versioning) had turns and library; 2 adds per-session task lists.
+            # Version 0 and 1 (before versioning) had turns and library; 2 adds per-session task lists;
+            # 3 adds a revision to each task list so a turn can't overwrite edits made while it ran.
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS turns (
                     session TEXT NOT NULL,
@@ -37,9 +38,13 @@ class State:
                 );
                 CREATE TABLE IF NOT EXISTS todos (
                     session TEXT PRIMARY KEY,
-                    items TEXT NOT NULL
+                    items TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 0
                 );
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(todos)")}
+            if "revision" not in columns:
+                db.execute("ALTER TABLE todos ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
             if version < SCHEMA_VERSION:
                 db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -85,9 +90,30 @@ class State:
                 yield from json.loads(messages)
 
     def todo(self, session: str):
+        return self.todo_revision(session)[0]
+
+    def todo_revision(self, session: str):
+        """Return (items, revision). The revision goes up with every saved change."""
         with closing(self.connect()) as db:
-            row = db.execute("SELECT items FROM todos WHERE session = ?", (session,)).fetchone()
-        return json.loads(row[0]) if row else []
+            row = db.execute("SELECT items, revision FROM todos WHERE session = ?", (session,)).fetchone()
+        return (json.loads(row[0]), row[1]) if row else ([], 0)
+
+    @staticmethod
+    def write_todo(db, session, items, expected):
+        """Save items if the list is still at revision expected. Returns the new revision, or None."""
+        encoded = json.dumps(items, ensure_ascii=False)
+        if expected == 0:
+            inserted = db.execute("INSERT OR IGNORE INTO todos VALUES (?, ?, 1)", (session, encoded))
+            if inserted.rowcount == 1:
+                return 1
+        updated = db.execute("UPDATE todos SET items = ?, revision = revision + 1 WHERE session = ? AND revision = ?",
+                             (encoded, session, expected))
+        return expected + 1 if updated.rowcount == 1 else None
+
+    def save_todo(self, session: str, items, expected: int):
+        """Save a task list edited by the user. Returns the new revision, or None if it changed meanwhile."""
+        with closing(self.connect()) as db, db:
+            return self.write_todo(db, session, items, expected)
 
     def search(self, query: str, limit: int = 8):
         """Find past user and assistant messages containing every word of query, newest first."""
@@ -145,7 +171,9 @@ class State:
         """).fetchone():
             raise RuntimeError("Another process filled the memory or skill store. Try the prompt again.")
 
-    def commit_turn(self, session, previous, messages, changes, todo=None):
+    def commit_turn(self, session, previous, messages, changes, todo=None, todo_revision=None):
+        """Save a completed turn. A task list the turn changed is saved only if nobody edited the list
+        since the turn last read it (todo_revision); returns False when the turn's list was not saved."""
         with closing(self.connect()) as db, db:
             inserted = db.execute("""
                 INSERT OR IGNORE INTO turns VALUES (?, ?, ?)
@@ -153,7 +181,9 @@ class State:
             if inserted.rowcount != 1:
                 raise RuntimeError("This session advanced in another process. Try the prompt again.")
             self.apply_changes(db, changes)
-            if todo is not None:
-                db.execute("""
-                    INSERT INTO todos VALUES (?, ?) ON CONFLICT (session) DO UPDATE SET items = excluded.items
-                """, (session, json.dumps(todo, ensure_ascii=False)))
+            if todo is None:
+                return True
+            if todo_revision is None:
+                row = db.execute("SELECT revision FROM todos WHERE session = ?", (session,)).fetchone()
+                todo_revision = row[0] if row else 0
+            return self.write_todo(db, session, todo, todo_revision) is not None

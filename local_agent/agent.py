@@ -140,13 +140,24 @@ class Agent:
             raise ValueError(f"Prompts must contain between 1 and {self.context_chars:,} characters.")
         memory = self.state.library("memory")
         skills = self.state.library("skill")
-        tasks = {"items": self.state.todo(session), "changed": False}
+        items, revision = self.state.todo_revision(session)
+        tasks = {"items": items, "revision": revision, "changed": False}
         changes = {}
 
         def read_skill(name):
             return skills[name]
 
         def todo(items=None):
+            current, revision = self.state.todo_revision(session)
+            if revision != tasks["revision"]:
+                # The user edited the list while this turn ran. Their version wins: pick it up, and
+                # don't apply an update the model based on the old list.
+                tasks.update(items=current, revision=revision, changed=False)
+                if items is not None:
+                    raise ValueError("The user edited the task list during this turn, so this update was "
+                                     "not applied. Current list: " + toolkit.as_json(current)
+                                     + ". Send the whole list again if it still needs changes.")
+                return {**toolkit.todo_summary(current), "note": "The user edited the task list."}
             if items is not None:
                 tasks["items"] = toolkit.parse_todo(items)
                 tasks["changed"] = True
@@ -245,8 +256,11 @@ class Agent:
                     messages[-1] = {**reply, "content": content}
                     forget_staged(messages)
                 self.emit("commit", changes=len(changes))
-                self.state.commit_turn(session, previous, messages, changes,
-                                       todo=tasks["items"] if tasks["changed"] else None)
+                saved = self.state.commit_turn(session, previous, messages, changes,
+                                               todo=tasks["items"] if tasks["changed"] else None,
+                                               todo_revision=tasks["revision"])
+                if not saved:
+                    self.emit("todo_kept")  # The user edited the list after the model's last update.
                 created.clear()
                 self.emit("done", content=content, changes=len(changes))
                 return content

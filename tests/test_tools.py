@@ -274,6 +274,94 @@ class TodoAndSearchTests(Base):
         with self.assertRaises(ValueError):
             tools.parse_todo("\n".join(f"task {i}" for i in range(31)))
 
+    def test_manual_todo_edits(self):
+        tasks = ["[ ] write tests", "[>] fix bug"]
+        tasks, note = tools.edit_todo(tasks, "add  ship   the release ")
+        self.assertEqual((tasks[-1], note), ("[ ] ship the release", "Added task 3."))
+        tasks, _ = tools.edit_todo(tasks, "edit 2 fix the parser bug")
+        self.assertEqual(tasks[1], "[>] fix the parser bug")
+        tasks, _ = tools.edit_todo(tasks, "move 3 1")
+        self.assertEqual(tasks, ["[ ] ship the release", "[ ] write tests", "[>] fix the parser bug"])
+        tasks, _ = tools.edit_todo(tasks, "done 3")
+        tasks, _ = tools.edit_todo(tasks, "start 2")
+        self.assertEqual(tasks, ["[ ] ship the release", "[>] write tests", "[x] fix the parser bug"])
+        tasks, _ = tools.edit_todo(tasks, "undo 3")
+        tasks, _ = tools.edit_todo(tasks, "remove 1")
+        self.assertEqual(tasks, ["[>] write tests", "[ ] fix the parser bug"])
+        self.assertEqual(tools.parse_todo("\n".join(tasks)), tasks)  # Edits stay in the agent's format.
+        for bad in ("add", "edit 9 x", "move 1 5", "done x", "done 1 extra", "rename 1 x", "edit 1 " + "x" * 201):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                tools.edit_todo(tasks, bad)
+        with self.assertRaisesRegex(ValueError, "30 items"):
+            tools.edit_todo([f"[ ] task {i}" for i in range(30)], "add one more")
+
+    def test_task_list_revisions_reject_stale_writes(self):
+        self.assertEqual(self.state.todo_revision("s"), ([], 0))
+        self.assertEqual(self.state.save_todo("s", ["[ ] one"], 0), 1)
+        self.assertIsNone(self.state.save_todo("s", ["[ ] stale"], 0))
+        self.assertEqual(self.state.save_todo("s", ["[ ] two"], 1), 2)
+        self.assertEqual(self.state.todo_revision("s"), (["[ ] two"], 2))
+        self.assertFalse(self.state.commit_turn("s", 0, [], {}, todo=["[ ] agent"], todo_revision=1))
+        self.assertEqual(self.state.todo("s"), ["[ ] two"])
+        self.assertEqual(self.state.sessions(), [("s", 1)])  # The turn itself is still saved.
+
+    def test_a_turn_keeps_task_edits_the_user_made_while_it_ran(self):
+        events = []
+        state = self.state
+
+        class EditsMidTurn(Scripted):
+            def complete(self, messages, tools):
+                if len(self.requests) == 1:  # After the model's first todo update.
+                    state.save_todo("s", ["[x] user's own task"], state.todo_revision("s")[1])
+                return super().complete(messages, tools)
+
+        provider = EditsMidTurn(call("todo", items="[ ] agent task"), call("todo", "c2"), text("Done."))
+        Agent(provider, self.state, on_event=lambda kind, data: events.append(kind)).turn("s", "Plan")
+        self.assertEqual(self.state.todo("s"), ["[x] user's own task"])
+        self.assertEqual(tool_results(provider)[1]["todos"], ["[x] user's own task"])  # The model sees the edit.
+        self.assertNotIn("todo_kept", events)  # Picked up mid-turn, so nothing of the user's was lost.
+
+        class EditsBeforeUpdate(Scripted):
+            def complete(self, messages, tools):
+                if len(self.requests) == 0:
+                    state.save_todo("s", ["[ ] edited again"], state.todo_revision("s")[1])
+                return super().complete(messages, tools)
+
+        provider = EditsBeforeUpdate(call("todo", items="[ ] stale agent list"), text("Done."))
+        Agent(provider, self.state).turn("s", "Update")
+        self.assertIn("user edited the task list", tool_results(provider)[-1]["error"])
+        self.assertIn("edited again", tool_results(provider)[-1]["error"])
+        self.assertEqual(self.state.todo("s"), ["[ ] edited again"])
+
+        class EditsAfterUpdate(Scripted):
+            def complete(self, messages, tools):
+                if len(self.requests) == 1:  # The model already updated; the user edits before it finishes.
+                    state.save_todo("s", ["[ ] last word"], state.todo_revision("s")[1])
+                return super().complete(messages, tools)
+
+        events.clear()
+        provider = EditsAfterUpdate(call("todo", items="[ ] agent wins?"), text("Done."))
+        Agent(provider, self.state, on_event=lambda kind, data: events.append(kind)).turn("s", "Again")
+        self.assertEqual(self.state.todo("s"), ["[ ] last word"])
+        self.assertIn("todo_kept", events)
+
+    def test_version_two_task_lists_gain_revisions(self):
+        folder = self.root / "v2"
+        folder.mkdir()
+        with closing(sqlite3.connect(folder / "state.sqlite3")) as db, db:
+            db.executescript("""
+                CREATE TABLE turns (session TEXT NOT NULL, number INTEGER NOT NULL, messages TEXT NOT NULL,
+                                    PRIMARY KEY (session, number));
+                CREATE TABLE library (kind TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL,
+                                      PRIMARY KEY (kind, name));
+                CREATE TABLE todos (session TEXT PRIMARY KEY, items TEXT NOT NULL);
+                INSERT INTO todos VALUES ('s', '["[ ] old"]');
+                PRAGMA user_version = 2;
+            """)
+        state = State(folder)
+        self.assertEqual(state.todo_revision("s"), (["[ ] old"], 0))
+        self.assertEqual(state.save_todo("s", ["[x] old"], 0), 1)
+
     def test_session_search_finds_earlier_conversations(self):
         self.state.commit_turn("travel", 0, [{"role": "user", "content": "Book a flight to Chiang Mai in March"},
                                              text("I'll look at flights.")], {})

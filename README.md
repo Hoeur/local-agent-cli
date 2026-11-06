@@ -211,7 +211,7 @@ python -m local_agent delete-session demo
 
 ## MVP behavior
 
-Memory and skill changes are committed together with the completed turn, after you approve them. The task list is saved with the turn too. Provider failures, cancellation or tool-loop exhaustion discard everything the turn staged. File changes and commands you approved have already happened by then and are not undone. A concurrent update to the same session is rejected so its history stays consistent.
+Memory and skill changes are committed together with the completed turn, after you approve them. The task list is saved with the turn too. In the terminal UI, `/todo add`, `edit`, `move`, `start`, `done`, `undo` and `remove` change the list yourself; your edits are saved at once, and a turn that is running keeps your version rather than overwriting it (the model is shown the edited list). Provider failures, cancellation or tool-loop exhaustion discard everything the turn staged. File changes and commands you approved have already happened by then and are not undone. A concurrent update to the same session is rejected so its history stays consistent.
 
 The MVP has these limits:
 

@@ -724,6 +724,7 @@ def web_search(query, limit=6, search_url=None, allow_private=False):
 
 # ── Todo ─────────────────────────────────────────────────────────────────────────────────
 
+TODO_LIMIT = 30
 TODO_MARKS = {" ": "pending", "": "pending", ">": "in progress", "~": "in progress", "-": "in progress",
               "x": "done", "X": "done", "✓": "done"}
 
@@ -741,9 +742,60 @@ def parse_todo(items):
         status = TODO_MARKS.get(mark, "pending")
         if body.strip():
             tasks.append("[" + {"pending": " ", "in progress": ">", "done": "x"}[status] + "] " + body.strip()[:200])
-    if len(tasks) > 30:
-        raise ValueError("Keep the task list to 30 items or fewer.")
+    if len(tasks) > TODO_LIMIT:
+        raise ValueError(f"Keep the task list to {TODO_LIMIT} items or fewer.")
     return tasks
+
+
+TODO_ACTIONS = ("add", "edit", "move", "start", "done", "undo", "remove")
+TODO_USAGE = ("/todo add TEXT · /todo edit N TEXT · /todo move N TO · /todo start N · /todo done N · "
+              "/todo undo N · /todo remove N")
+
+
+def edit_todo(tasks, command):
+    """Apply one manual edit like 'add TEXT', 'edit 2 TEXT' or 'move 3 1' to a normalized task list.
+    Returns (new list, short description). Numbers count from 1, as /todo shows them."""
+    action, _, rest = command.strip().partition(" ")
+    action, rest = action.lower(), rest.strip()
+    tasks = list(tasks)
+    if action not in TODO_ACTIONS:
+        raise ValueError("Usage: " + TODO_USAGE)
+
+    def body(value):
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Give the task text.")
+        if len(value) > 200:
+            raise ValueError("Keep each task to 200 characters or fewer.")
+        return value
+
+    if action == "add":
+        if len(tasks) >= TODO_LIMIT:
+            raise ValueError(f"Keep the task list to {TODO_LIMIT} items or fewer.")
+        tasks.append("[ ] " + body(rest))
+        return tasks, f"Added task {len(tasks)}."
+    number, _, rest = rest.partition(" ")
+    if not number.isdigit() or not 1 <= int(number) <= len(tasks):
+        raise ValueError(f"Choose a task number from 1 to {len(tasks)}." if tasks else "The task list is empty.")
+    index = int(number) - 1
+    if action == "edit":
+        tasks[index] = tasks[index][:4] + body(rest)
+        return tasks, f"Edited task {number}."
+    if action == "move":
+        target = rest.strip()
+        if not target.isdigit() or not 1 <= int(target) <= len(tasks):
+            raise ValueError(f"Move it to a position from 1 to {len(tasks)}.")
+        tasks.insert(int(target) - 1, tasks.pop(index))
+        return tasks, f"Moved task {number} to {target}."
+    if rest.strip():
+        raise ValueError("Usage: " + TODO_USAGE)
+    if action == "remove":
+        tasks.pop(index)
+        return tasks, f"Removed task {number}."
+    mark = {"start": ">", "done": "x", "undo": " "}[action]
+    tasks[index] = f"[{mark}]" + tasks[index][3:]
+    return tasks, {"start": f"Started task {number}.", "done": f"Completed task {number}.",
+                   "undo": f"Marked task {number} pending."}[action]
 
 
 def todo_summary(tasks):

@@ -27,6 +27,7 @@ from textual.widgets import Button, Collapsible, DirectoryTree, Markdown, Option
 from textual.widgets.option_list import Option
 
 from .. import providers
+from .. import tools as toolkit
 from ..agent import MAX_TOOL_ROUNDS, TOOLS, Agent, TurnCancelled, tool_names
 from ..attachments import message_text
 from ..config import load_config, read_settings, save_config, set_active
@@ -602,6 +603,7 @@ class AgentApp(App):
                 "sidebar": ["on", "off"], "session": [name for name, _ in self.state.sessions()],
                 "hologram": ["on", "off", *hologram.MODES, *hologram.SIZES, "still", "live", "reset", "status"],
                 "skill": list(self.state.library("skill")),
+                "todo": list(toolkit.TODO_ACTIONS),
             }.get(name.lower(), [])
             return [(f"/{name} {choice}", choice, "") for choice in choices if choice.startswith(argument)
                     and choice != argument]
@@ -754,10 +756,7 @@ class AgentApp(App):
                 await self.note(f"_{clean(skills[argument]['description'])}_\n\n```text\n"
                                 f"{clean(skills[argument]['steps'])}\n```", f"Skill · {argument}")
         elif name == "todo":
-            items = self.state.todo(self.session)
-            body = "\n".join(f"- `{clean(item[:3])}` {clean(item[4:])}" for item in items)
-            await self.note(body or "_No task list for this session. The agent keeps one for multi-step work._",
-                            f"Tasks · {self.session}")
+            await self.todo_command(argument)
         elif name == "search":
             if not argument:
                 self.notify("Usage: /search <words>", severity="warning")
@@ -834,6 +833,33 @@ class AgentApp(App):
         elif name == "copy":
             self.action_copy_reply()
         chat.anchor()
+
+    async def todo_command(self, argument):
+        """/todo shows the session's task list; /todo add|edit|move|start|done|undo|remove changes it.
+        Edits are saved at once and work during a turn: the turn then keeps the user's version."""
+        message = ""
+        if argument:
+            for _ in range(3):
+                items, revision = self.state.todo_revision(self.session)
+                try:
+                    items, message = toolkit.edit_todo(items, argument)
+                except ValueError as error:
+                    self.notify(clean(str(error)), severity="error", timeout=4)
+                    return
+                if self.state.save_todo(self.session, items, revision) is not None:
+                    break
+            else:
+                self.notify("The task list kept changing. Try the edit again.", severity="warning")
+                return
+            self.notify(message, title="Tasks", timeout=2)
+        items = self.state.todo(self.session)
+        body = "\n".join(f"{number}. `{clean(item[:3])}` {clean(item[4:])}" for number, item in enumerate(items, 1))
+        if not body:
+            body = "_No task list for this session. The agent keeps one for multi-step work, or add one with_ " \
+                   "`/todo add TEXT`."
+        elif not argument:
+            body += f"\n\n_{toolkit.TODO_USAGE}_"
+        await self.note(body, f"Tasks · {self.session}" + (f" · {message}" if message else ""))
 
     # ── Providers ─────────────────────────────────────────────────────────────────────────
 
@@ -1130,6 +1156,9 @@ class AgentApp(App):
                 dropped = f", dropped {data['dropped']} old turn{'s' * (data['dropped'] != 1)}" if data["dropped"] else ""
                 self.notify(f"Trimmed tool output to fit the {data['budget']:,}-character budget{dropped}.",
                             title="Context compressed", timeout=3)
+        elif event.kind == "todo_kept":
+            self.notify("You edited the task list during this turn, so your version was kept.",
+                        title="Tasks", timeout=4)
         elif event.kind == "commit":
             token.changes = data["changes"]
         elif event.kind == "done":

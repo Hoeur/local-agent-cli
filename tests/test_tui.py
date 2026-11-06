@@ -431,6 +431,33 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Lisbon", notes)
         self.assertEqual(self.state.library("memory"), {})
 
+    async def test_todo_controls_edit_the_saved_list_even_during_a_turn(self):
+        provider = StreamingFake(call("todo", items="[ ] agent plan"), text("Planned."))
+        app = self.make(provider)
+        shown = []
+        original = app.note
+        app.note = lambda markdown, title: shown.append((title, markdown)) or original(markdown, title)
+        async with app.run_test(size=(120, 40)) as pilot:
+            for command in ("/todo add write tests", "/todo add fix the parser", "/todo add ship it",
+                            "/todo edit 2 fix the parser bug", "/todo move 3 1", "/todo done 2", "/todo start 3"):
+                await self.send(pilot, app, command)
+            self.assertEqual(self.state.todo("s"), ["[ ] ship it", "[x] write tests", "[>] fix the parser bug"])
+            self.assertIn("1. `[ ]` ship it", shown[-1][1])
+            await self.send(pilot, app, "/todo move 9 1")
+            self.assertEqual(self.state.todo("s")[0], "[ ] ship it")  # Bad numbers change nothing.
+
+            provider.release.clear()
+            await self.send(pilot, app, "Make a plan")
+            self.assertTrue(app.busy)
+            await self.send(pilot, app, "/todo remove 1")  # Edited while the model works.
+            provider.release.set()
+            await self.wait_idle(pilot, app)
+            self.assertEqual(self.state.todo("s"), ["[x] write tests", "[>] fix the parser bug"])
+            from local_agent.tui.widgets import Composer
+            app.query_one(Composer).load_text("/todo ")
+            await pilot.pause(0.1)
+            self.assertEqual(app.suggestion_values[:3], ["/todo add", "/todo edit", "/todo move"])
+
     async def test_slash_commands(self):
         from local_agent.tui.screens import HelpScreen
         from local_agent.tui.widgets import NoteCard, StatusBar, TopBar
