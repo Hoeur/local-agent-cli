@@ -48,9 +48,11 @@ The full-screen UI starts when Textual is installed and both input and output ar
 | `ctrl+l` | Clear the view (the saved history is untouched) |
 | `ctrl+q`, `/exit`, `ctrl+d` on an empty composer | Quit |
 
+On Windows, copies go straight to the system clipboard as Unicode with Windows line breaks, so they paste intact from Command Prompt, PowerShell and Windows Terminal. Elsewhere, and over SSH, the terminal does the copy (OSC 52), which most terminals support.
+
 ## Commands
 
-`/help`, `/new [name]`, `/session <name>`, `/sessions`, `/history` (the view shows the latest 40 turns; this loads all), `/clear`, `/memory`, `/forget <name>`, `/skills`, `/skill <name>`, `/todo` (this session's task list), `/search <words>` (past conversations), `/learn [on|off]`, `/write [on|off]` and `/shell [on|off]` (need `--workspace`), `/web [on|off]`, `/theme [name]`, `/motion [full|reduced|off]`, `/sidebar [on|off|width]`, `/hologram [...]` (see below), `/expand`, `/doctor`, `/provider [name]` (list or switch model profiles: Claude, OpenAI, DeepSeek, Alibaba...), `/model [name]` (list or switch the model), `/copy` (last reply, via the terminal clipboard), `/exit`. Every command without an argument is also in the palette, along with session switching, saved provider profiles, themes and motion levels.
+`/help`, `/new [name]`, `/session <name>`, `/sessions`, `/history` (the view shows the latest 40 turns; this loads all), `/clear`, `/memory`, `/forget <name>`, `/skills`, `/skill <name>`, `/todo` (this session's task list), `/search <words>` (past conversations), `/learn [on|off]`, `/write [on|off]` and `/shell [on|off]` (need `--workspace`), `/web [on|off]`, `/theme [name]`, `/motion [full|reduced|off]`, `/sidebar [on|off|width]`, `/hologram [...]` (see below), `/expand`, `/doctor`, `/provider [name]` (list or switch model profiles: Claude, OpenAI, DeepSeek, Alibaba...), `/model [name]` (list or switch the model), `/copy` (the latest reply, like `f4`), `/exit`. Every command without an argument is also in the palette, along with session switching, saved provider profiles, themes and motion levels.
 
 ## Holographic core
 

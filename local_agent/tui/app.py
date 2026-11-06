@@ -8,7 +8,6 @@ import asyncio
 import json
 import os
 import sqlite3
-import subprocess
 import threading
 import time
 from datetime import datetime
@@ -32,7 +31,7 @@ from ..agent import MAX_TOOL_ROUNDS, TOOLS, Agent, TurnCancelled, tool_names
 from ..attachments import message_text
 from ..config import load_config, read_settings, save_config, set_active
 from ..file_commands import FILE_COMMANDS, FileCommands
-from . import commands, effects, hologram
+from . import clipboard, commands, effects, hologram
 from .holoview import HoloHud, HoloPanel, ViewControl, make_view
 from .screens import ActionScreen, ApprovalScreen, FilePreview, HelpScreen
 from .theme import (DEFAULT_PREFS, HOLOGRAM_WIDTHS, MOTION_FPS, MOTION_LEVELS, PALETTES, TEXTUAL_LEVEL, detect_glyphs,
@@ -1535,19 +1534,13 @@ class AgentApp(App):
             self.query_one(Composer).focus()
 
     def copy_to_clipboard(self, text):
-        super().copy_to_clipboard(text)
-        if os.name != "nt" or self.is_headless or os.environ.get("SSH_CONNECTION"):
+        # Local Windows consoles: write the system clipboard directly (Unicode, CRLF line breaks).
+        # Elsewhere, and over SSH, Textual asks the terminal to copy with OSC 52.
+        if (os.name == "nt" and not self.is_headless and not os.environ.get("SSH_CONNECTION")
+                and clipboard.copy(text)):
+            self._clipboard = text
             return
-        powershell = (Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
-                      / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-        command = ("[Console]::InputEncoding = [Text.Encoding]::UTF8; "
-                   "Set-Clipboard -Value ([Console]::In.ReadToEnd())")
-        try:
-            subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-STA", "-Command", command],
-                           input=text.encode("utf-8"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=3, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        except (OSError, subprocess.SubprocessError):
-            pass  # Textual has already sent the clipboard request to the terminal.
+        super().copy_to_clipboard(text)
 
     async def action_interrupt(self):
         focused = self.focused

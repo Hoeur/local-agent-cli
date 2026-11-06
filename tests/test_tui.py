@@ -76,6 +76,41 @@ class ThemeTests(unittest.TestCase):
             self.assertEqual(load_prefs(folder)["sidebar_width"], 34)
 
 
+class ClipboardTests(unittest.TestCase):
+    SAMPLE = 'def greet():\n    print("សួស្តី — héllo ✓")\n\treturn 1\n'
+
+    def test_windows_text_uses_crlf_once(self):
+        from local_agent.tui.clipboard import windows_text
+        self.assertEqual(windows_text("a\nb\r\nc\rd"), "a\r\nb\r\nc\r\nd")
+        self.assertEqual(windows_text(self.SAMPLE).replace("\r\n", "\n"), self.SAMPLE)
+
+    def test_native_copy_is_used_on_local_windows_consoles(self):
+        from local_agent.tui import app as app_module
+        app = app_module.AgentApp.__new__(app_module.AgentApp)
+        app._clipboard = ""
+        app._driver = None
+        with mock.patch.object(app_module.os, "name", "nt"), \
+                mock.patch.dict(app_module.os.environ, {}, clear=False), \
+                mock.patch.object(app_module.clipboard, "copy", return_value=True) as native:
+            app_module.os.environ.pop("SSH_CONNECTION", None)
+            app.copy_to_clipboard(self.SAMPLE)
+        native.assert_called_once_with(self.SAMPLE)
+        self.assertEqual(app.clipboard, self.SAMPLE)
+        with mock.patch.object(app_module.os, "name", "nt"), \
+                mock.patch.dict(app_module.os.environ, {"SSH_CONNECTION": "1 2 3 4"}), \
+                mock.patch.object(app_module.clipboard, "copy") as native:
+            app.copy_to_clipboard("over ssh")
+        native.assert_not_called()  # Over SSH the remote terminal's OSC 52 copy is the right one.
+        self.assertEqual(app.clipboard, "over ssh")
+
+    @unittest.skipUnless(os.name == "nt", "Windows clipboard")
+    def test_windows_clipboard_round_trip_keeps_unicode_and_indentation(self):
+        from local_agent.tui import clipboard
+        if not clipboard.copy(self.SAMPLE):
+            self.skipTest("The Windows clipboard is not available in this session.")
+        self.assertEqual(clipboard.paste(), clipboard.windows_text(self.SAMPLE))
+
+
 class AppTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         # unittest runs these loops in asyncio debug mode, which logs every UI frame slower than 0.1 s.
