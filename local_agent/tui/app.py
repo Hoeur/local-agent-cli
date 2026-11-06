@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -23,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.theme import Theme
-from textual.widgets import Collapsible, DirectoryTree, Markdown, OptionList, Static
+from textual.widgets import Button, Collapsible, DirectoryTree, Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .. import providers
@@ -196,7 +197,7 @@ class AgentApp(App):
     COMMANDS = App.COMMANDS | {commands.AgentCommands}
     COMMAND_PALETTE_BINDING = "ctrl+p"
     BINDINGS = [
-        Binding("ctrl+c", "interrupt", "Cancel", priority=True, show=False),
+        Binding("ctrl+c", "interrupt", "Copy selection / cancel", priority=True, show=False),
         Binding("escape", "escape", "Cancel / close", show=False),
         Binding("ctrl+b,f2", "toggle_sidebar", "Sidebar", priority=True),
         Binding("ctrl+o", "expand_all", "Tool output", priority=True),
@@ -205,6 +206,7 @@ class AgentApp(App):
         Binding("ctrl+n", "new_session", "New session", priority=True),
         Binding("f1", "help", "Help", priority=True),
         Binding("f3", "toggle_hologram", "Hologram", priority=True),
+        Binding("f4", "copy_reply", "Copy reply", priority=True),
         Binding("alt+left", "rotate_hologram(-0.25, 0)", "Rotate", priority=True, show=False),
         Binding("alt+right", "rotate_hologram(0.25, 0)", "Rotate", priority=True, show=False),
         Binding("alt+up", "rotate_hologram(0, -0.18)", "Tilt", priority=True, show=False),
@@ -300,6 +302,10 @@ class AgentApp(App):
             with Vertical(id="center"):
                 yield ChatLog(id="chat")
                 with Vertical(id="composer-area"):
+                    with Horizontal(id="copy-tools"):
+                        yield Button("Copy reply", variant="primary", id="copy-reply", compact=True, flat=True,
+                                     action="app.copy_reply", tooltip="Copy the latest reply (F4)")
+                        yield Static("Drag text + Ctrl+C", id="copy-hint")
                     yield Suggestions(id="suggestions")
                     yield Composer(id="composer", placeholder="Ask anything  ·  / commands  ·  @ files"
                                    if self.workspace is not None else "Ask anything  ·  / for commands")
@@ -373,6 +379,7 @@ class AgentApp(App):
     async def load_session(self, fade=True, limit=HISTORY_TURNS):
         chat = self.query_one(ChatLog)
         await chat.remove_children()
+        self.last_reply = ""
         self.refs.clear()
         self.query_one(TopBar).session = self.session
         turns = []
@@ -826,11 +833,7 @@ class AgentApp(App):
         elif name == "model":
             await self.model_command(argument)
         elif name == "copy":
-            if self.last_reply:
-                self.copy_to_clipboard(self.last_reply)
-                self.notify("Copied the last reply.", timeout=2)
-            else:
-                self.notify("Nothing to copy yet.", timeout=2)
+            self.action_copy_reply()
         chat.anchor()
 
     # ── Providers ─────────────────────────────────────────────────────────────────────────
@@ -1522,14 +1525,42 @@ class AgentApp(App):
         else:
             composer.focus()
 
+    def action_copy_reply(self):
+        if self.last_reply:
+            self.copy_to_clipboard(self.last_reply)
+            self.notify("Copied the last reply.", timeout=2)
+        else:
+            self.notify("Nothing to copy yet.", timeout=2)
+        if self.focused is not None and self.focused.id == "copy-reply":
+            self.query_one(Composer).focus()
+
+    def copy_to_clipboard(self, text):
+        super().copy_to_clipboard(text)
+        if os.name != "nt" or self.is_headless or os.environ.get("SSH_CONNECTION"):
+            return
+        powershell = (Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+                      / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+        command = ("[Console]::InputEncoding = [Text.Encoding]::UTF8; "
+                   "Set-Clipboard -Value ([Console]::In.ReadToEnd())")
+        try:
+            subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-STA", "-Command", command],
+                           input=text.encode("utf-8"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=3, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        except (OSError, subprocess.SubprocessError):
+            pass  # Textual has already sent the clipboard request to the terminal.
+
     async def action_interrupt(self):
-        composer = self.query_one(Composer)
-        if self.busy:
+        focused = self.focused
+        selection = self.screen.get_selected_text()
+        if not selection and isinstance(focused, TextArea):
+            selection = focused.selected_text
+        if selection:
+            self.copy_to_clipboard(selection)
+            self.notify("Copied selection.", timeout=2)
+        elif self.busy:
             await self.cancel_turn()
-        elif self.focused is composer and composer.selected_text:
-            self.copy_to_clipboard(composer.selected_text)
-        elif self.focused is composer and composer.text:
-            composer.load_text("")
+        elif isinstance(focused, Composer) and focused.text:
+            focused.load_text("")
         else:
             self.notify("Press ctrl+q or type /exit to quit.", timeout=2)
 

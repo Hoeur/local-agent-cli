@@ -139,6 +139,9 @@ Screen {
     background: $surface;
     border-left: tall $secondary 70%;
 }
+.assistant .copy-code {
+    margin: 0 2;
+}
 .assistant MarkdownBlockQuote {
     border-left: outer $accent;
     background: $accent 6%;
@@ -287,6 +290,14 @@ Welcome {
 #composer-area {
     height: auto;
     padding: 0 2 0 2;
+}
+#copy-tools {
+    height: 1;
+}
+#copy-hint {
+    width: 1fr;
+    margin-left: 2;
+    color: $muted-color;
 }
 #suggestions {
     height: auto;

@@ -152,6 +152,54 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.file_commands.pending)
         self.assertIn("Test attachment content", provider.requests[1][0][-1]["content"])
 
+    async def test_copies_dragged_text_and_exact_code_from_a_reply(self):
+        from textual.widgets import Button
+        from local_agent.tui.widgets import Composer, CopyableCodeBlock
+
+        code = 'if ready:\n    print("សួស្តី")\n'
+        reply = "Copy these words.\n\n```python\n" + code + "```\n\n```text\nsecond block\n```"
+        provider = StreamingFake(text(reply), text("Next reply"))
+        app = self.make(provider)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.send(pilot, app, "Show the code")
+            await self.wait_idle(pilot, app)
+            blocks = list(app.query(CopyableCodeBlock))
+            self.assertEqual(len(blocks), 2)
+            await pilot.click(blocks[1].query_one(Button))
+            self.assertEqual(app.clipboard, "second block\n")
+            await pilot.click(blocks[0].query_one(Button))
+            self.assertEqual(app.clipboard, code)
+
+            provider.release.clear()
+            app.query_one(Composer).focus()
+            await self.send(pilot, app, "Slow follow-up")
+            paragraph = app.query_one("MarkdownParagraph")
+            await pilot.mouse_down(paragraph, offset=(0, 0))
+            await pilot.mouse_up(paragraph, offset=(9, 0))
+            await pilot.press("ctrl+c")
+            self.assertEqual(app.clipboard, "Copy these")
+            self.assertTrue(app.busy)
+            app.screen.clear_selection()
+            await pilot.press("ctrl+c")
+            self.assertFalse(app.busy)
+            provider.release.set()
+
+    async def test_copy_reply_button_and_shortcut_are_available_for_plain_replies(self):
+        from local_agent.tui.widgets import Composer
+
+        app = self.make(StreamingFake(text("A reply without any code.")))
+        async with app.run_test(size=(80, 24)) as pilot:
+            button = app.query_one("#copy-reply")
+            self.assertTrue(button.is_on_screen)
+            await self.send(pilot, app, "Show a reply")
+            await self.wait_idle(pilot, app)
+            self.assertTrue(await pilot.click(button))
+            self.assertEqual(app.clipboard, "A reply without any code.")
+            self.assertIsInstance(app.focused, Composer)
+            app.copy_to_clipboard("other text")
+            await pilot.press("f4")
+            self.assertEqual(app.clipboard, "A reply without any code.")
+
     async def test_tool_calls_show_status(self):
         from local_agent.tui.widgets import ToolCall
         provider = StreamingFake(call("read_skill", name="missing"), text("No such skill."))

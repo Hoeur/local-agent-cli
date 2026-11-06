@@ -200,7 +200,10 @@ HELP = """\
 | `ctrl+b` · `f2` | Toggle the sidebar |
 | `ctrl+o` | Expand or collapse all tool output |
 | `pageup` / `pagedown` · `ctrl+end` | Scroll the conversation · jump to the latest |
-| `esc` · `ctrl+c` | Cancel the running turn (nothing from it is saved) |
+| Drag text · `ctrl+c` | Copy selected text |
+| **Copy reply** · `f4` | Copy the latest reply |
+| **Copy code** | Copy a code block with indentation and line breaks |
+| `esc` · `ctrl+c` with no selection | Cancel the running turn |
 | `ctrl+t` | Next theme |
 | `ctrl+l` | Clear the view (history stays saved) |
 | `ctrl+n` | New session |

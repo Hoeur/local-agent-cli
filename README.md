@@ -4,15 +4,17 @@ A standalone Python CLI agent with persistent conversations, memory, and reusabl
 
 ## Run on Windows
 
-Requires Python 3.11 or later and a model with tool calling: local through Ollama, or a cloud model (Claude, OpenAI/Codex, DeepSeek, Alibaba Qwen and others; see [Models and settings](#models-and-settings)). The local development setup uses Ollama with `qwen3:0.6b`. From this directory, run these commands in PowerShell.
+Requires Python 3.11 or later and a model with tool calling: local through Ollama, or a cloud model (Claude, OpenAI/Codex, DeepSeek, Alibaba Qwen and others; see [Models and settings](#models-and-settings)). The local development setup uses Ollama with `qwen3:0.6b`. From this directory, run these commands in Command Prompt or PowerShell.
 
 ```powershell
 python -m pip install -e ".[tui]"
 python -m local_agent setup --model qwen3:0.6b
 python -m local_agent doctor
-python -m local_agent chat --session demo                          # chat only
-python -m local_agent chat --session dev --workspace . --all       # files, shell, web and learning
+python -m local_agent chat --session demo
+python -m local_agent chat --session dev --workspace . --all
 ```
+
+Use the `demo` command for basic chat or the `dev` command to enable workspace access, file edits, shell commands, web access, and learning.
 
 ![Local Agent terminal UI](docs/screenshots/welcome.png)
 

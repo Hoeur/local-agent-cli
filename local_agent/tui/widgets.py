@@ -13,7 +13,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Collapsible, DirectoryTree, Markdown, OptionList, Static, TextArea
+from textual.widgets import Button, Collapsible, DirectoryTree, Markdown, OptionList, Static, TextArea
+from textual.widgets.markdown import MarkdownFence
 
 from . import effects
 
@@ -472,6 +473,24 @@ class ToolCall(Animated, Vertical):
         self.details.display = True
 
 
+class CopyableCodeBlock(MarkdownFence):
+    def __init__(self, markdown, token, _code):
+        super().__init__(markdown, token, token.content)
+
+    def compose(self):
+        yield Button("Copy code", classes="copy-code", compact=True, flat=True)
+        yield from super().compose()
+
+    def on_button_pressed(self, event: Button.Pressed):
+        event.stop()
+        self.app.copy_to_clipboard(self.code)
+        self.app.notify("Copied code.", timeout=2)
+
+
+class ReplyMarkdown(Markdown):
+    BLOCKS = {**Markdown.BLOCKS, "fence": CopyableCodeBlock, "code_block": CopyableCodeBlock}
+
+
 class AssistantMessage(Vertical):
     """A full assistant turn: thinking indicator, optional reasoning, text segments and tool calls."""
 
@@ -521,7 +540,7 @@ class AssistantMessage(Vertical):
         await self.close_stream()
         self.raw = ""
         self.sent = 0
-        self.segment = Markdown("", classes="segment")
+        self.segment = ReplyMarkdown("", classes="segment")
         await self.body.mount(self.segment)
         if self.thinking is not None:
             self.thinking.label = "thinking"

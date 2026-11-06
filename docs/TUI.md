@@ -9,7 +9,7 @@ The full-screen interface for `python -m local_agent chat`. It's an optional lay
 ```powershell
 python -m pip install -e ".[tui]"
 python -m local_agent chat --session demo --workspace . --learn
-python -m local_agent chat --session dev --workspace . --all   # files, shell, web and learning
+python -m local_agent chat --session dev --workspace . --all
 ```
 
 The full-screen UI starts when Textual is installed and both input and output are a terminal. It falls back to the line-based chat when either is piped, with `--plain`, or with `AGENT_UI=plain`. One-shot prompts (`chat "question"`) always print plain text. `--no-stream` asks the model for whole replies instead of streaming them.
@@ -37,7 +37,10 @@ The full-screen UI starts when Textual is installed and both input and output ar
 | `ctrl+b`, `f2` | Toggle the sidebar |
 | `ctrl+o` | Expand or collapse all tool output |
 | `pageup` / `pagedown`, `ctrl+home` / `ctrl+end` | Scroll the conversation |
-| `esc`, `ctrl+c` | Cancel the running turn |
+| Drag text, `ctrl+c` | Copy selected text |
+| **Copy reply**, `f4` | Copy the latest reply |
+| **Copy code** | Copy a code block with indentation and line breaks |
+| `esc`, `ctrl+c` with no selection | Cancel the running turn |
 | `f3` | Show or hide the hologram |
 | `alt+←` `alt+→` `alt+↑` `alt+↓` | Rotate and tilt the hologram (also: drag it with the mouse; the wheel zooms) |
 | `ctrl+t` | Next theme |
