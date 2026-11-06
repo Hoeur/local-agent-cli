@@ -61,7 +61,8 @@ _DEFINITIONS = {
                  "starting with [ ] pending, [>] in progress or [x] done. Omit items to view it.",
                  optional={"items": text(4000, empty=True)}),
     "session_search": tool("Search earlier conversations for words.", {"query": text(200)}),
-    "create_artifact": tool("Save a generated HTML, Markdown, text, CSV, JSON or SVG artifact.",
+    "create_artifact": tool("Save a standalone UTF-8 text artifact in the agent data directory, outside "
+                            "the workspace. Keep the requested extension. Use write_file for project files.",
                             {"name": text(100), "content": text(24_000)}),
     "list_artifacts": tool("List saved artifacts and their IDs."),
     "read_artifact": tool("Read a saved text artifact or get image metadata by ID.", {"id": text(32)}),
@@ -80,6 +81,7 @@ _DEFINITIONS = {
                          "file names like *.py. Give either or both.",
                          optional={"pattern": text(200), "glob": text(100), "path": text(512)}),
     "write_file": tool("Create a workspace text file, or replace an existing one with new full content. "
+                       "Set path to the relative filename, e.g. 'style.css' or 'src/style.css'. "
                        "Write the file's real text, without read_file's 'NUMBER| ' prefixes.",
                        {"path": text(512), "content": text(200_000, True)}),
     "patch": tool("Replace one exact, unique piece of text in a workspace file. Copy old_text without "
@@ -197,7 +199,7 @@ class Workspace:
         """A file that may not exist yet. Its nearest existing folder must be inside the workspace."""
         relative = self.relative(path)
         if not relative.parts:
-            raise ValueError("Choose a file path, not the workspace root.")
+            raise ValueError("Include the filename in the workspace-relative path, such as 'style.css'.")
         target = self.root / relative
         if target.exists() or target.is_symlink():
             resolved = target.resolve(strict=True)

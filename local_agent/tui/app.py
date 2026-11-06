@@ -418,6 +418,8 @@ class AgentApp(App):
                 if message.get("content") and not message.get("tool_calls"):
                     await reply.set_content(message["content"])
                     self.last_reply = message["content"]
+                    if message.get("workspace_writes"):
+                        await reply.body.mount(NoteCard(Text(clean(message["workspace_writes"]))))
             elif message.get("role") == "tool":
                 content = message.get("content", "")
                 error = None
@@ -1214,6 +1216,8 @@ class AgentApp(App):
             token.changes = data["changes"]
         elif event.kind == "done":
             await reply.set_content(data["content"])
+            if data["workspace_writes"]:
+                await reply.body.mount(NoteCard(Text(data["workspace_writes"])))
 
     async def on_turn_finished(self, message: TurnFinished):
         token, reply = message.token, self.current
@@ -1267,7 +1271,7 @@ class AgentApp(App):
                 card.mark_removed()
             await reply.finish("cancelled")
         chat = self.query_one(ChatLog)
-        await chat.mount(NoteCard(divider("turn cancelled · nothing from it was saved", self), "divider"))
+        await chat.mount(NoteCard(divider("turn cancelled · conversation not saved", self), "divider"))
         self.set_state("cancelled", "")
         chat.anchor()
 

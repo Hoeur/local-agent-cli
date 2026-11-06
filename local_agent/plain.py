@@ -104,6 +104,11 @@ class Spinner:
             self.label = "thinking" if not data["round"] else f"thinking · round {data['round'] + 1}"
 
 
+def report_workspace_writes(kind, data):
+    if kind == "done" and data["workspace_writes"]:
+        print(data["workspace_writes"], file=sys.stderr)
+
+
 def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint=False, attachments=()):
     """Interactive line-based chat. Returns an exit code."""
     from .file_commands import FileCommands
@@ -133,7 +138,13 @@ def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint
 
     agent.approve = paused(approve) if agent.approve is not None else None
     agent.confirm = paused(agent.confirm) if agent.confirm is not None else None
-    agent.on_event = spinner.on_event if spinner.active else None
+    def on_event(kind, data):
+        spinner.on_event(kind, data)
+        if kind == "done" and data["workspace_writes"]:
+            spinner.stop()
+            report_workspace_writes(kind, data)
+
+    agent.on_event = on_event
     while True:
         prompt = input(out("You> ", BOLD, PURPLE) if styled else "You> ").strip()
         if prompt == "/exit":
@@ -152,7 +163,7 @@ def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint
             print((out("Agent> ", BOLD, CYAN) if styled else "Agent> ") + reply)
         except KeyboardInterrupt:
             spinner.stop()
-            print(out("Cancelled. Nothing from this turn was saved.", YELLOW) if styled else "Cancelled.",
+            print(out("Cancelled. Conversation not saved.", YELLOW) if styled else "Cancelled.",
                   file=sys.stderr)
         except errors as error:
             print(out(f"Error: {printable(error)}", RED) if styled else f"Error: {error}", file=sys.stderr)

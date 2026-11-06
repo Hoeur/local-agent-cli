@@ -90,7 +90,7 @@ class AttachmentStore:
         remaining = MAX_IMAGES_BYTES
         result = []
         for message in reversed(messages):
-            wire = {key: value for key, value in message.items() if key != "attachments"}
+            wire = {key: value for key, value in message.items() if key not in {"attachments", "workspace_writes"}}
             images = []
             omitted = []
             for item in message.get("attachments", []):

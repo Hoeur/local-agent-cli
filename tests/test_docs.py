@@ -37,13 +37,19 @@ class WindowsCommandTests(unittest.TestCase):
         self.assertEqual(found, [])
         self.assertTrue(any(True for _ in command_blocks(DOCS[0])))
 
-    def test_release_install_command_names_the_packaged_version(self):
+    def test_release_install_commands_name_the_same_published_wheel(self):
+        readme = DOCS[0].read_text(encoding="utf-8")
+        release = re.search(r"/releases/download/v(?P<version>\d+\.\d+\.\d+)/"
+                            r"(?P<wheel>local_agent_cli-(?P=version)-py3-none-any\.whl)", readme)
+        self.assertIsNotNone(release)
+        self.assertIn(f'"{release["wheel"]}[tui]"', readme)
+
+    def test_local_wheel_install_command_names_the_packaged_version(self):
         import tomllib
 
         version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
         readme = DOCS[0].read_text(encoding="utf-8")
-        self.assertIn(f"/releases/download/v{version}/local_agent_cli-{version}-py3-none-any.whl", readme)
-        self.assertIn(f'"local_agent_cli-{version}-py3-none-any.whl[tui]"', readme)
+        self.assertIn(f'"dist/local_agent_cli-{version}-py3-none-any.whl[tui]"', readme)
 
 
 if __name__ == "__main__":

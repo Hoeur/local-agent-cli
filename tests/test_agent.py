@@ -185,6 +185,21 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Not saved", reply)
         self.assertIn("Not saved", list(self.state.transcript("s"))[-1]["content"])
 
+    def test_prompt_keeps_project_files_out_of_artifacts_and_names_the_missing_switch(self):
+        workspace = self.root / "project"
+        workspace.mkdir()
+        read_only = Agent(None, self.state, workspace).system_prompt(["read_file"], {})["content"]
+        self.assertIn("/write on", read_only)
+        self.assertIn("/shell on", read_only)
+        self.assertIn("never in create_artifact", read_only)
+        editing = Agent(None, self.state, workspace, write=True, shell=True).system_prompt(["write_file"], {})["content"]
+        self.assertNotIn("/write on", editing)
+        self.assertIn("Use write_file to create a file in the workspace", editing)
+        no_workspace = Agent(None, self.state).system_prompt(["create_artifact"], {})["content"]
+        self.assertIn("use create_artifact", no_workspace)
+        self.assertIn("--workspace . --write", no_workspace)
+        self.assertNotIn("/write on", no_workspace)
+
     def test_approved_changes_are_saved_and_unchanged_turns_skip_the_prompt(self):
         asked = []
         approve = lambda changes: asked.append(changes) or True

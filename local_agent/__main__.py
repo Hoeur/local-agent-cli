@@ -322,6 +322,8 @@ def main(argv=None):
                     found = True
                     if message["role"] in {"user", "assistant"} and message.get("content"):
                         print(f"{message['role']}> {message['content']}")
+                    if message.get("workspace_writes"):
+                        print(printable(message["workspace_writes"]))
                 if not found:
                     raise ValueError(f"Unknown session {args.session!r}.")
             elif args.command == "memory":
@@ -383,7 +385,10 @@ def main(argv=None):
         agent = Agent(provider, state, args.workspace, config["context_chars"], approve,
                       confirm=confirm, image_provider=providers.make_image_provider(config), **options)
         if args.prompt is not None:
+            from .plain import report_workspace_writes
+
             provider.streaming = False
+            agent.on_event = report_workspace_writes
             print(agent.turn(args.session, args.prompt, args.learn, attachments=args.attach))
             return 0
 

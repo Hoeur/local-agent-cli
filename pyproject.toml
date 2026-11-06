@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-agent-cli"
-version = "0.3.1"
+version = "0.3.2"
 description = "A local CLI agent with file, shell and web tools, persistent sessions, memory and skills"
 requires-python = ">=3.11"
 dependencies = []
