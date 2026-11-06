@@ -328,7 +328,9 @@ Welcome {
     color: $muted-color;
 }
 #attachment-bar {
-    height: 1;
+    height: auto;
+    max-height: 2;
+    scrollbar-size-horizontal: 1;
     display: none;
 }
 .attachment-title {

@@ -847,19 +847,17 @@ class AgentApp(App):
         Edits are saved at once and work during a turn: the turn then keeps the user's version."""
         message = ""
         if argument:
-            for _ in range(3):
-                items, revision = self.state.todo_revision(self.session)
-                try:
-                    items, message = toolkit.edit_todo(items, argument)
-                except ValueError as error:
-                    self.notify(clean(str(error)), severity="error", timeout=4)
-                    return
-                if self.state.save_todo(self.session, items, revision) is not None:
-                    break
-            else:
-                self.notify("The task list kept changing. Try the edit again.", severity="warning")
+            items, revision = self.state.todo_revision(self.session)
+            try:
+                items, message = toolkit.edit_todo(items, argument)
+            except ValueError as error:
+                self.notify(clean(str(error)), severity="error", timeout=4)
                 return
-            self.notify(message, title="Tasks", timeout=2)
+            if self.state.save_todo(self.session, items, revision) is None:
+                message = "List changed. Check the task numbers and retry the edit."
+                self.notify(message, title="Tasks", severity="warning", timeout=4)
+            else:
+                self.notify(message, title="Tasks", timeout=2)
         items = self.state.todo(self.session)
         body = "\n".join(f"{number}. `{clean(item[:3])}` {clean(item[4:])}" for number, item in enumerate(items, 1))
         if not body:
@@ -1074,7 +1072,7 @@ class AgentApp(App):
 
         def on_event(kind, data):
             nonlocal batch
-            if token.cancelled and kind != "done":
+            if token.cancelled and kind not in {"todo_kept", "done"}:
                 raise TurnCancelled("Cancelled.")
             if kind == "tool_wait":
                 return  # A command is still running; only the cancellation check above matters.
@@ -1104,8 +1102,7 @@ class AgentApp(App):
             agent = Agent(self.provider, self.state, self.workspace, self.config["context_chars"],
                           (lambda changes: True) if self.auto_approve else approve, on_event,
                           confirm=confirm, write=self.write, shell=self.shell, web=self.web,
-                          max_rounds=self.max_rounds, image_provider=providers.make_image_provider(self.config),
-                          search=search.configured(self.data_dir))
+                          max_rounds=self.max_rounds, image_provider=providers.make_image_provider(self.config))
             content = agent.turn(session, prompt, learn, attachments=attachments)
         except Exception as caught:  # Shown in the UI; the agent has already discarded the turn.
             error = caught

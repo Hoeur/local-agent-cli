@@ -81,12 +81,15 @@ def plain(value, limit=300):
 
 
 def brave_search(query, limit=6, allow_private=False):
-    from .tools import HTTPStatusError, fetch
+    from .tools import HTTPStatusError, PrivateWebAddress, fetch
 
     key, _ = brave_key()
     if not key:
         raise ValueError(f"Brave Search needs an API key. Set {BRAVE_KEY_ENV}, or run: local-agent key set "
                          f"{BRAVE_KEY_NAME}. To search without a key, run: local-agent web-search duckduckgo")
+    if any(not 33 <= ord(char) < 127 for char in key):
+        raise ValueError(f"Brave Search has a malformed API key. Check {BRAVE_KEY_ENV} or run: "
+                         f"local-agent key set {BRAVE_KEY_NAME}")
     if urlsplit(BRAVE_URL).scheme != "https" and not allow_private:
         raise ValueError("Brave Search must be reached over HTTPS.")
     url = BRAVE_URL + "?" + urlencode({"q": query, "count": max(1, min(limit, 20))})
@@ -103,8 +106,10 @@ def brave_search(query, limit=6, allow_private=False):
         else:
             detail = f"failed with HTTP {error.code}."
         raise ValueError(f"Brave Search {detail}") from None
-    except ValueError as error:
-        raise ValueError(f"Brave Search could not be reached. {error}") from None
+    except PrivateWebAddress:
+        raise ValueError("Brave Search request blocked. Private, local and reserved addresses are unavailable.") from None
+    except ValueError:
+        raise ValueError("Brave Search could not be reached. Check your network connection and try again.") from None
     try:
         data = json.loads(body)
         entries = (data.get("web") or {}).get("results") or []

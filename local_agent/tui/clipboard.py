@@ -5,6 +5,7 @@ import time
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
+HWND_MESSAGE = -3
 
 
 def windows_text(text):
@@ -20,6 +21,12 @@ def _api():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     user32.OpenClipboard.argtypes = [wintypes.HWND]
     user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                                      ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                      wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.DestroyWindow.restype = wintypes.BOOL
     user32.CloseClipboard.restype = wintypes.BOOL
     user32.EmptyClipboard.restype = wintypes.BOOL
     user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
@@ -37,10 +44,10 @@ def _api():
     return ctypes, user32, kernel32
 
 
-def _open(user32, attempts=10):
+def _open(user32, owner=None, attempts=10):
     # Another program may hold the clipboard for a moment; retry briefly.
     for _ in range(attempts):
-        if user32.OpenClipboard(None):
+        if user32.OpenClipboard(owner):
             return True
         time.sleep(0.02)
     return False
@@ -55,28 +62,35 @@ def copy(text):
     except (OSError, AttributeError, ImportError):
         return False
     data = windows_text(text).encode("utf-16-le") + b"\x00\x00"
-    if not _open(user32):
+    # A clipboard write needs an owner even in a pseudoconsole with no visible application window.
+    owner = user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, HWND_MESSAGE, None, None, None)
+    if not owner:
         return False
+    handle = None
     try:
-        if not user32.EmptyClipboard():
-            return False
         handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
         if not handle:
             return False
         pointer = kernel32.GlobalLock(handle)
         if not pointer:
-            kernel32.GlobalFree(handle)
             return False
         try:
             ctypes.memmove(pointer, data, len(data))
         finally:
             kernel32.GlobalUnlock(handle)
-        if not user32.SetClipboardData(CF_UNICODETEXT, handle):
-            kernel32.GlobalFree(handle)  # Ownership passes to the system only on success.
+        if not _open(user32, owner):
             return False
-        return True
+        try:
+            if not user32.EmptyClipboard() or not user32.SetClipboardData(CF_UNICODETEXT, handle):
+                return False
+            handle = None  # Ownership passes to the system only on success.
+            return True
+        finally:
+            user32.CloseClipboard()
     finally:
-        user32.CloseClipboard()
+        if handle:
+            kernel32.GlobalFree(handle)
+        user32.DestroyWindow(owner)
 
 
 def paste():

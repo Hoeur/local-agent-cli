@@ -76,6 +76,23 @@ class FileTests(unittest.TestCase):
         self.assertEqual(self.state.artifacts.list()["artifacts"], [kept])
         self.assertFalse(list(self.state.transcript("test")))
 
+    def test_post_commit_cancellation_keeps_the_artifact(self):
+        provider = StreamingFake(call("todo", "tasks", items="[ ] Model task"),
+                                 call("create_artifact", "artifact", name="report.txt", content="Report"),
+                                 text("Saved"))
+
+        def cancel(event, _data):
+            if event == "commit":
+                self.state.save_todo("test", ["[ ] User task"], 0)
+            if event == "todo_kept":
+                raise TurnCancelled("Cancelled after commit")
+
+        with self.assertRaises(TurnCancelled):
+            Agent(provider, self.state, on_event=cancel).turn("test", "Create a report")
+        self.assertTrue(list(self.state.transcript("test")))
+        self.assertEqual(self.state.todo("test"), ["[ ] User task"])
+        self.assertEqual([item["name"] for item in self.state.artifacts.list()["artifacts"]], ["report.txt"])
+
     def test_generated_image_returns_inline_bytes_and_is_saved_as_an_artifact(self):
         image = ImageProvider("http://localhost:8080/v1", "image-model", None)
         provider = StreamingFake(call("generate_image", name="result.png", prompt="A square"), text("Saved"))

@@ -103,12 +103,29 @@ class ClipboardTests(unittest.TestCase):
         native.assert_not_called()  # Over SSH the remote terminal's OSC 52 copy is the right one.
         self.assertEqual(app.clipboard, "over ssh")
 
-    @unittest.skipUnless(os.name == "nt", "Windows clipboard")
-    def test_windows_clipboard_round_trip_keeps_unicode_and_indentation(self):
+    def test_native_clipboard_write_uses_an_owner_and_prepares_data_before_clearing(self):
         from local_agent.tui import clipboard
-        if not clipboard.copy(self.SAMPLE):
-            self.skipTest("The Windows clipboard is not available in this session.")
-        self.assertEqual(clipboard.paste(), clipboard.windows_text(self.SAMPLE))
+
+        ctypes, user32, kernel32 = mock.Mock(), mock.Mock(), mock.Mock()
+        user32.CreateWindowExW.return_value = 101
+        kernel32.GlobalAlloc.return_value = 202
+        kernel32.GlobalLock.return_value = 303
+        with mock.patch.object(clipboard.os, "name", "nt"), mock.patch.object(
+            clipboard, "_api", return_value=(ctypes, user32, kernel32)
+        ):
+            self.assertTrue(clipboard.copy(self.SAMPLE))
+            user32.OpenClipboard.assert_called_once_with(101)
+            user32.SetClipboardData.assert_called_once_with(clipboard.CF_UNICODETEXT, 202)
+            user32.DestroyWindow.assert_called_once_with(101)
+            data = (clipboard.windows_text(self.SAMPLE) + "\x00").encode("utf-16-le")
+            ctypes.memmove.assert_called_once_with(303, data, len(data))
+            kernel32.GlobalFree.assert_not_called()
+            user32.reset_mock()
+            kernel32.GlobalAlloc.return_value = None
+            self.assertFalse(clipboard.copy(self.SAMPLE))
+            user32.OpenClipboard.assert_not_called()
+            user32.EmptyClipboard.assert_not_called()
+            user32.DestroyWindow.assert_called_once_with(101)
 
 
 class AppTests(unittest.IsolatedAsyncioTestCase):
@@ -233,6 +250,20 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("content of c.txt", sent)
         self.assertNotIn("content of a.txt", sent)
         self.assertNotIn("content of b.txt", sent)
+
+    async def test_all_attachment_chips_are_reachable_in_a_narrow_terminal(self):
+        from local_agent.tui.widgets import AttachmentBar
+
+        files = [self.root / f"attachment-{number}-long-name.txt" for number in range(4)]
+        app = self.make(StreamingFake(), attachments=files)
+        async with app.run_test(size=(80, 24)) as pilot:
+            bar = app.query_one(AttachmentBar)
+            last = bar.query(".attachment-chip").last()
+            self.assertGreater(bar.max_scroll_x, 0)
+            bar.scroll_to(x=bar.max_scroll_x, animate=False, immediate=True)
+            await pilot.pause()
+            self.assertTrue(await pilot.click(last))
+            self.assertEqual(app.file_commands.pending, files[:-1])
 
     async def test_attachments_stay_queued_and_visible_after_a_cancelled_turn(self):
         from local_agent.tui.widgets import AttachmentBar
@@ -529,6 +560,22 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("book flights", notes)
             self.assertIn("Lisbon", notes)
         self.assertEqual(self.state.library("memory"), {})
+
+    async def test_todo_conflict_does_not_apply_a_number_to_the_reordered_list(self):
+        self.state.save_todo("s", ["[ ] alpha", "[ ] beta"], 0)
+        save = self.state.save_todo
+        reordered = ["[ ] beta", "[ ] alpha"]
+
+        def concurrent_save(session, items, revision):
+            save(session, reordered, revision)
+            return save(session, items, revision)
+
+        app = self.make(StreamingFake())
+        async with app.run_test(size=(80, 24)) as pilot:
+            with mock.patch.object(self.state, "save_todo", side_effect=concurrent_save) as save_attempt:
+                await self.send(pilot, app, "/todo done 1")
+                save_attempt.assert_called_once()
+            self.assertEqual(self.state.todo("s"), reordered)
 
     async def test_todo_controls_edit_the_saved_list_even_during_a_turn(self):
         provider = StreamingFake(call("todo", items="[ ] agent plan"), text("Planned."))

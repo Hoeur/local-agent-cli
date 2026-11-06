@@ -9,7 +9,7 @@ from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import events
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, HorizontalScroll, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -561,7 +561,7 @@ def artifact_result(name, result, error):
     return None
 
 
-class AttachmentBar(Horizontal):
+class AttachmentBar(HorizontalScroll):
     """Files queued for the next message, beside the composer. Each chip's ✕ removes that file."""
 
     class Remove(Message):

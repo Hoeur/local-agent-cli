@@ -3,6 +3,7 @@ import platform
 import re
 from pathlib import Path
 
+from . import search as search_providers
 from . import tools as toolkit
 from .artifacts import IMAGE_TYPES
 from .config import DEFAULT_CONTEXT_CHARS
@@ -39,7 +40,7 @@ class Agent:
     def __init__(self, provider, state, workspace: Path | None = None,
                  context_chars: int = DEFAULT_CONTEXT_CHARS, approve=None, on_event=None, *,
                  confirm=None, write=False, shell=False, web=False, max_rounds=MAX_TOOL_ROUNDS,
-                 allow_private_web=False, image_provider=None, search="duckduckgo"):
+                 allow_private_web=False, image_provider=None, search=None):
         self.provider = provider
         self.image_provider = image_provider
         # on_event(kind, data) lets a user interface follow a turn without changing it:
@@ -211,8 +212,10 @@ class Agent:
             "write_file": self.write_file,
             "patch": self.patch,
             "terminal": self.terminal,
-            "web_search": lambda query: toolkit.web_search(query, allow_private=self.allow_private_web,
-                                                          provider=self.search),
+            "web_search": lambda query: toolkit.web_search(
+                query, allow_private=self.allow_private_web,
+                provider=self.search or search_providers.configured(self.state.path.parent),
+            ),
             "web_extract": lambda url: toolkit.web_extract(url, self.output_chars, self.allow_private_web),
         }
         names = self.tool_names(learn)
@@ -261,9 +264,9 @@ class Agent:
                 saved = self.state.commit_turn(session, previous, messages, changes,
                                                todo=tasks["items"] if tasks["changed"] else None,
                                                todo_revision=tasks["revision"])
+                created.clear()
                 if not saved:
                     self.emit("todo_kept")  # The user edited the list after the model's last update.
-                created.clear()
                 self.emit("done", content=content, changes=len(changes))
                 return content
             messages.extend(

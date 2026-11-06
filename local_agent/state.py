@@ -79,7 +79,11 @@ class State:
     def sessions(self):
         with closing(self.connect()) as db:
             return db.execute("""
-                SELECT session, COUNT(*) FROM turns GROUP BY session ORDER BY session
+                SELECT session, COUNT(number) FROM (
+                    SELECT session, number FROM turns
+                    UNION ALL
+                    SELECT session, NULL FROM todos
+                ) GROUP BY session ORDER BY session
             """).fetchall()
 
     def transcript(self, session: str):
@@ -148,8 +152,8 @@ class State:
     def delete_session(self, session: str):
         with closing(self.connect()) as db, db:
             count = db.execute("DELETE FROM turns WHERE session = ?", (session,)).rowcount
-            db.execute("DELETE FROM todos WHERE session = ?", (session,))
-        return count
+            tasks = db.execute("DELETE FROM todos WHERE session = ?", (session,)).rowcount
+        return count or tasks
 
     def update_library(self, changes):
         """Apply memory or skill changes made by the user directly (not through a turn)."""

@@ -305,6 +305,13 @@ class TodoAndSearchTests(Base):
         self.assertEqual(self.state.todo("s"), ["[ ] two"])
         self.assertEqual(self.state.sessions(), [("s", 1)])  # The turn itself is still saved.
 
+    def test_task_only_session_can_be_listed_and_deleted(self):
+        self.state.save_todo("tasks-only", ["[ ] draft"], 0)
+        self.assertEqual(self.state.sessions(), [("tasks-only", 0)])
+        self.assertTrue(self.state.delete_session("tasks-only"))
+        self.assertEqual(self.state.sessions(), [])
+        self.assertEqual(self.state.todo("tasks-only"), [])
+
     def test_a_turn_keeps_task_edits_the_user_made_while_it_ran(self):
         events = []
         state = self.state
@@ -641,6 +648,25 @@ class SearchProviderTests(WebTests):
         tools.web_search("x", allow_private=True, provider="brave")
         self.assertNotIn("x-subscription-token", Page.last_headers)
         self.assertIn("user-agent", Page.last_headers)
+
+    def test_malformed_brave_key_never_reaches_tool_output(self):
+        os.environ["BRAVE_SEARCH_API_KEY"] = "BSA-test-key-1234\nsecond line"
+        provider = Scripted(call("web_search", query="local agent"), text("Search failed."))
+        with mock.patch.object(tools, "fetch") as fetch:
+            Agent(provider, self.state, web=True, search="brave").turn("s", "Search")
+        fetch.assert_not_called()
+        result = tool_results(provider)[0]["error"]
+        self.assertIn("malformed API key", result)
+        self.assertNotIn("BSA-test-key-1234", result)
+
+    def test_invalid_search_configuration_does_not_block_chat(self):
+        directory = self.root / "cli"
+        self.assertEqual(self.run_cli(directory, "setup", "--provider", "ollama", "--model", "fixture")[0], 0)
+        os.environ["AGENT_SEARCH_PROVIDER"] = "typo"
+        provider = Scripted(text("Hello"))
+        with mock.patch.object(providers, "make_provider", return_value=provider):
+            status, output = self.run_cli(directory, "chat", "--max-rounds", "0", "Hello")
+        self.assertEqual((status, output.strip()), (0, "Hello"))
 
     def test_agent_uses_the_configured_provider(self):
         os.environ["BRAVE_SEARCH_API_KEY"] = "BSA-test-key-1234"

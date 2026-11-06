@@ -538,6 +538,10 @@ def is_public_address(address):
     return ip.is_global and not (ip.is_reserved or ip.is_multicast or getattr(ip, "is_site_local", False))
 
 
+class PrivateWebAddress(ValueError):
+    """A web destination resolved to an address outside the public internet."""
+
+
 def connect_public(destination, timeout, source_address=None):
     host, port = destination
     try:
@@ -545,7 +549,7 @@ def connect_public(destination, timeout, source_address=None):
     except (socket.gaierror, UnicodeError):
         raise ValueError(f"Could not resolve {host}.") from None
     if any(not is_public_address(address[0]) for _, _, _, _, address in addresses):
-        raise ValueError("Private, local and reserved network addresses are not fetched.")
+        raise PrivateWebAddress("Private, local and reserved network addresses are not fetched.")
     # Connect directly to the checked socket address. A proxy or another DNS lookup could pick a different peer.
     failure = OSError("No usable address was found.")
     for family, kind, protocol, _, address in addresses:

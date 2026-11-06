@@ -9,6 +9,7 @@ The default run serves a scripted model from a local OpenAI-compatible fixture, 
 deterministic: it keeps a session task list, reads a file, makes an edit you approve, asks for a
 shell command you decline, copies the reply and a code block, then restarts the app and resumes the
 session. --ollama adds a live turn against a local Ollama model and resumes that session too.
+On Windows, --native-clipboard opts into replacing and checking the desktop clipboard.
 """
 import argparse
 import asyncio
@@ -81,7 +82,7 @@ async def wait_for(pilot, condition, seconds=20.0):
     return False
 
 
-def make_app(data, workspace, base_url, model, session):
+def make_app(data, workspace, base_url, model, session, native_clipboard=False):
     from local_agent import providers
     from local_agent.state import State
     from local_agent.tui.app import AgentApp
@@ -90,9 +91,7 @@ def make_app(data, workspace, base_url, model, session):
         CSS_PATH = str(Path(sys.modules[AgentApp.__module__].__file__).with_name("app.tcss"))
 
         def use_system_clipboard(self):
-            # The check runs headless, where the app normally leaves the clipboard alone; on Windows
-            # it uses the real clipboard so the paste checks below test what a user would paste.
-            return os.name == "nt"
+            return native_clipboard and os.name == "nt"
 
     config = {"provider": "ollama", "profile": "ollama", "base_url": base_url, "model": model,
               "context_chars": 24_000, "max_tokens": None, "image_model": "", "image_base_url": ""}
@@ -125,7 +124,7 @@ async def answer_dialogs(pilot, app, decisions, seconds=20.0):
     return seen
 
 
-async def scripted_workflow(root, base_url):
+async def scripted_workflow(root, base_url, native_clipboard=False):
     from textual.widgets import Button
 
     from local_agent.tui import clipboard
@@ -136,7 +135,7 @@ async def scripted_workflow(root, base_url):
     (workspace / "notes.txt").write_text("release notes\nstatus = draft\n", encoding="utf-8")
     Fixture.replies[:] = [dict(item) for item in SCRIPT]
 
-    app = make_app(data, workspace, base_url, "fixture-model", "workflow")
+    app = make_app(data, workspace, base_url, "fixture-model", "workflow", native_clipboard)
     async with app.run_test(size=(120, 40)) as pilot:
         await send(pilot, app, "Mark the release notes ready, then run the check script.")
         tools = await answer_dialogs(pilot, app, ["y", "n"])
@@ -144,13 +143,13 @@ async def scripted_workflow(root, base_url):
         check(app.last_reply == REPLY, "the final reply arrived")
         await pilot.press("f4")
         check(app.clipboard == REPLY, "F4 copied the latest reply")
-        if os.name == "nt":
+        if native_clipboard:
             check(clipboard.paste() == clipboard.windows_text(REPLY), "the Windows clipboard holds the reply")
         blocks = list(app.query(CopyableCodeBlock))
         check(len(blocks) == 1, "the reply shows one code block with a Copy code button")
         await pilot.click(blocks[0].query_one(Button))
         check(app.clipboard == CODE, "Copy code copied the block with its indentation and Unicode")
-        if os.name == "nt":
+        if native_clipboard:
             check(clipboard.paste() == clipboard.windows_text(CODE), "the Windows clipboard holds the code")
         await pilot.press("ctrl+q")
 
@@ -195,7 +194,10 @@ async def live_workflow(root, model):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--ollama", metavar="MODEL", help="Also run a live turn against this Ollama model")
+    parser.add_argument("--native-clipboard", action="store_true", help="Replace and verify the Windows clipboard")
     args = parser.parse_args()
+    if args.native_clipboard and os.name != "nt":
+        parser.error("--native-clipboard requires Windows")
     import local_agent
 
     print(f"python {sys.version.split()[0]} at {sys.executable}")
@@ -206,7 +208,7 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            asyncio.run(scripted_workflow(root, f"http://127.0.0.1:{server.server_port}/v1"))
+            asyncio.run(scripted_workflow(root, f"http://127.0.0.1:{server.server_port}/v1", args.native_clipboard))
             if args.ollama:
                 asyncio.run(live_workflow(root, args.ollama))
     finally:

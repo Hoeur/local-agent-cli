@@ -381,8 +381,7 @@ def main(argv=None):
         options = {"write": args.write, "shell": args.shell, "web": args.web, "max_rounds": args.max_rounds}
         state = State(args.data_dir)
         agent = Agent(provider, state, args.workspace, config["context_chars"], approve,
-                      confirm=confirm, image_provider=providers.make_image_provider(config),
-                      search=web_search_providers.configured(args.data_dir), **options)
+                      confirm=confirm, image_provider=providers.make_image_provider(config), **options)
         if args.prompt is not None:
             provider.streaming = False
             print(agent.turn(args.session, args.prompt, args.learn, attachments=args.attach))
