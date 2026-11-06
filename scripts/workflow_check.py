@@ -86,10 +86,18 @@ def make_app(data, workspace, base_url, model, session):
     from local_agent.state import State
     from local_agent.tui.app import AgentApp
 
+    class CheckedApp(AgentApp):
+        CSS_PATH = str(Path(sys.modules[AgentApp.__module__].__file__).with_name("app.tcss"))
+
+        def use_system_clipboard(self):
+            # The check runs headless, where the app normally leaves the clipboard alone; on Windows
+            # it uses the real clipboard so the paste checks below test what a user would paste.
+            return os.name == "nt"
+
     config = {"provider": "ollama", "profile": "ollama", "base_url": base_url, "model": model,
               "context_chars": 24_000, "max_tokens": None, "image_model": "", "image_base_url": ""}
     provider = providers.make_provider(config)
-    return AgentApp(provider, State(data), data, config, session, workspace, write=True, shell=True,
+    return CheckedApp(provider, State(data), data, config, session, workspace, write=True, shell=True,
                     max_rounds=8, prefs={"theme": "neon", "hologram": False})
 
 

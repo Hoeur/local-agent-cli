@@ -1533,11 +1533,13 @@ class AgentApp(App):
         if self.focused is not None and self.focused.id == "copy-reply":
             self.query_one(Composer).focus()
 
+    def use_system_clipboard(self):
+        """Local Windows consoles get the system clipboard directly (Unicode, CRLF line breaks).
+        Elsewhere, and over SSH, Textual asks the terminal to copy with OSC 52."""
+        return os.name == "nt" and not self.is_headless and not os.environ.get("SSH_CONNECTION")
+
     def copy_to_clipboard(self, text):
-        # Local Windows consoles: write the system clipboard directly (Unicode, CRLF line breaks).
-        # Elsewhere, and over SSH, Textual asks the terminal to copy with OSC 52.
-        if (os.name == "nt" and not self.is_headless and not os.environ.get("SSH_CONNECTION")
-                and clipboard.copy(text)):
+        if self.use_system_clipboard() and clipboard.copy(text):
             self._clipboard = text
             return
         super().copy_to_clipboard(text)
