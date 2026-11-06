@@ -348,8 +348,10 @@ class AgentApp(App):
         The welcome screen has its own, larger hologram, so the panel waits until it is gone."""
         if width is None:
             width, height = self.size
-        panel = self.query_one(HoloPanel)
-        sidebar = self.query_one(Sidebar)
+        panel = next(iter(self.query(HoloPanel)), None)
+        sidebar = next(iter(self.query(Sidebar)), None)
+        if panel is None or sidebar is None:
+            return  # A renderer change can finish while the screen is unmounting.
         # A docked sidebar takes layout space whether it is pinned or opened as an overlay.
         docked = self.sidebar_width if self.sidebar_visible or sidebar.display else 0
         room = width - docked - 58  # Keep at least 58 columns for the conversation.
@@ -358,8 +360,9 @@ class AgentApp(App):
                 and panel_width >= HOLOGRAM_WIDTHS[0])
         if show:
             panel.styles.width = panel_width + 1  # Plus the left border.
-            view = panel.query_one("#side-holo")
-            view.styles.height = max(7, min(height - 9, round(panel_width / 2.15)))
+            view = next(iter(panel.query("#side-holo")), None)
+            if view is not None:
+                view.styles.height = max(7, min(height - 9, round(panel_width / 2.15)))
         panel.display = show
         for welcome in self.query(Welcome):
             welcome.layout_hero()
