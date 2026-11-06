@@ -18,6 +18,7 @@ from rich.console import Group
 from rich.markdown import Markdown as RichMarkdown
 from rich.style import Style
 from rich.text import Text
+from textual import work
 from textual.app import App
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -37,7 +38,7 @@ from .holoview import HoloHud, HoloPanel, ViewControl, make_view
 from .screens import ActionScreen, ApprovalScreen, FilePreview, HelpScreen
 from .theme import (DEFAULT_PREFS, HOLOGRAM_WIDTHS, MOTION_FPS, MOTION_LEVELS, PALETTES, TEXTUAL_LEVEL, detect_glyphs,
                     detect_motion, save_prefs)
-from .widgets import (AssistantMessage, ChatLog, Composer, ErrorCard, NoteCard, Sidebar, StatusBar, Suggestions,
+from .widgets import (ArtifactCard, AssistantMessage, AttachmentBar, ChatLog, Composer, ErrorCard, NoteCard, Sidebar, StatusBar, Suggestions,
                       TopBar, UserMessage, Welcome, clean, divider, split_reasoning, stamp)
 
 HISTORY_TURNS = 40
@@ -307,6 +308,7 @@ class AgentApp(App):
                                      action="app.copy_reply", tooltip="Copy the latest reply (F4)")
                         yield Static("Drag text + Ctrl+C", id="copy-hint")
                     yield Suggestions(id="suggestions")
+                    yield AttachmentBar(id="attachment-bar")
                     yield Composer(id="composer", placeholder="Ask anything  ·  / commands  ·  @ files"
                                    if self.workspace is not None else "Ask anything  ·  / for commands")
             yield HoloPanel(id="holo-panel")
@@ -327,6 +329,7 @@ class AgentApp(App):
         self.apply_layout()
         self.refresh_sidebar()
         await self.load_session(fade=False)
+        await self.refresh_attachments()
         self.query_one(Composer).focus()
         self.check_connection(False)
 
@@ -707,6 +710,9 @@ class AgentApp(App):
             if self.busy and name in {"attach", "detach"}:
                 self.notify("Wait for the current turn before changing attachments.", severity="warning")
                 return
+            if name == "artifacts" and not argument:
+                await self.show_artifacts()
+                return
             try:
                 if name == "open":
                     body = await asyncio.to_thread(self.file_commands.handle, f"/{name} {argument}")
@@ -715,6 +721,7 @@ class AgentApp(App):
             except (OSError, RuntimeError, ValueError) as error:
                 self.notify(clean(str(error)), severity="error")
                 return
+            await self.refresh_attachments()
             await self.note(body, "Files", literal=True)
         elif name == "help":
             self.action_help()
@@ -860,6 +867,45 @@ class AgentApp(App):
         elif not argument:
             body += f"\n\n_{toolkit.TODO_USAGE}_"
         await self.note(body, f"Tasks · {self.session}" + (f" · {message}" if message else ""))
+
+    # ── Attachments and artifacts ─────────────────────────────────────────────────────────
+
+    async def refresh_attachments(self):
+        await self.query_one(AttachmentBar).show(self.file_commands.pending)
+
+    async def on_attachment_bar_remove(self, message: AttachmentBar.Remove):
+        if self.busy:
+            self.notify("Wait for the current turn before changing attachments.", severity="warning")
+            return
+        if 0 <= message.index < len(self.file_commands.pending):
+            path = self.file_commands.pending.pop(message.index)
+            self.notify(f"Removed {clean(path.name)}; it won't be sent.", title="Attachments", timeout=2)
+        await self.refresh_attachments()
+        self.query_one(Composer).focus()
+
+    async def show_artifacts(self, limit=10):
+        listing = self.state.artifacts.list()
+        items = listing["artifacts"]
+        if not items:
+            await self.note("_No artifacts yet. Ask the agent to create a file._", "Artifacts")
+            return
+        more = len(items) - limit if len(items) > limit else 0
+        await self.note(f"Latest {min(limit, len(items))} · **Preview** opens a sandboxed browser page"
+                        + (f" · {more}{'+' if listing['truncated'] else ''} older — `/artifact ID` reads any"
+                           if more else ""), "Artifacts")
+        chat = self.query_one(ChatLog)
+        await chat.mount_all(ArtifactCard(item) for item in items[:limit])
+        chat.anchor()
+
+    @work(thread=True, exclusive=True, group="preview")
+    def preview_artifact(self, identifier):
+        try:
+            path = self.state.artifacts.preview(identifier, open_browser=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.call_from_thread(self.notify, clean(str(error)), severity="error", timeout=4)
+        else:
+            self.call_from_thread(self.notify, f"Opened a sandboxed preview: {clean(path)}",
+                                  title="Artifact", timeout=3)
 
     # ── Providers ─────────────────────────────────────────────────────────────────────────
 
@@ -1179,6 +1225,7 @@ class AgentApp(App):
         chat = self.query_one(ChatLog)
         if message.error is None:
             self.file_commands.pending.clear()
+            await self.refresh_attachments()
             tokens = token.completion_tokens
             meta = f"{elapsed:.1f}s" + (f" · {'~' if token.estimated else ''}{tokens} tok" if tokens else "")
             await reply.finish(meta)
@@ -1193,6 +1240,8 @@ class AgentApp(App):
         elif isinstance(message.error, TurnCancelled):
             await self.finish_cancelled(reply)
         else:
+            for card in reply.artifacts:
+                card.mark_removed()
             await reply.finish("failed")
             error = message.error
             title = "Something went wrong" if not isinstance(error, (RuntimeError, ValueError, OSError,
@@ -1209,6 +1258,8 @@ class AgentApp(App):
 
     async def finish_cancelled(self, reply):
         if reply is not None:
+            for card in reply.artifacts:
+                card.mark_removed()
             await reply.finish("cancelled")
         chat = self.query_one(ChatLog)
         await chat.mount(NoteCard(divider("turn cancelled · nothing from it was saved", self), "divider"))

@@ -28,6 +28,16 @@ class FileCommands:
         self.state = state
         self.pending = list(attachments)
 
+    def detach(self, which):
+        """Remove one queued attachment by its number in /attachments, or by file name."""
+        names = [path.name for path in self.pending]
+        if which.isdigit() and 1 <= int(which) <= len(self.pending):
+            return self.pending.pop(int(which) - 1)
+        if names.count(which) == 1:
+            return self.pending.pop(names.index(which))
+        raise ValueError("Choose an attachment number or file name from /attachments." if self.pending
+                         else "No files attached.")
+
     def handle(self, prompt):
         command, _, argument = prompt.partition(" ")
         argument = argument.strip()
@@ -44,10 +54,13 @@ class FileCommands:
             self.pending.append(path)
             return f"Attached {path.name} for the next message."
         if command == "/attachments" and not argument:
-            return "\n".join(str(path) for path in self.pending) or "No files attached."
-        if command == "/detach" and not argument:
-            self.pending.clear()
-            return "Attachments cleared."
+            return "\n".join(f"{number}. {path}" for number, path in enumerate(self.pending, 1)) \
+                or "No files attached."
+        if command == "/detach":
+            if not argument:
+                self.pending.clear()
+                return "Attachments cleared."
+            return f"Removed {self.detach(argument).name}; it won't be sent."
         if command == "/artifacts" and not argument:
             return artifact_list(self.state.artifacts)
         if command == "/artifact":

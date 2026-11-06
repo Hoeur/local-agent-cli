@@ -491,6 +491,106 @@ class ReplyMarkdown(Markdown):
     BLOCKS = {**Markdown.BLOCKS, "fence": CopyableCodeBlock, "code_block": CopyableCodeBlock}
 
 
+def file_size(count):
+    for unit in ("bytes", "KB", "MB"):
+        if count < 1024 or unit == "MB":
+            return f"{count:,} {unit}" if unit == "bytes" else f"{count:,.1f} {unit}"
+        count /= 1024
+
+
+class ArtifactCard(Horizontal):
+    """A generated artifact with Preview (a sandboxed browser page) and Copy path actions."""
+
+    def __init__(self, artifact):
+        super().__init__(classes="artifact-card")
+        self.artifact = {key: artifact.get(key) for key in ("id", "name", "path", "mime", "bytes")}
+        self.removed = False
+
+    def compose(self):
+        yield Static(self.label(), classes="artifact-label")
+        yield Button("Preview", classes="artifact-preview", compact=True, flat=True, disabled=self.removed,
+                     tooltip="Open a sandboxed browser preview (scripts and network blocked)")
+        yield Button("Copy path", classes="artifact-copy", compact=True, flat=True, disabled=self.removed,
+                     tooltip=clean(self.artifact["path"]))
+
+    def label(self):
+        palette, glyphs = self.app.palette, self.app.glyphs
+        line = Text()
+        line.append(f"{glyphs.folder} ", Style(color=palette["accent"]))
+        line.append(clean(self.artifact["name"]), Style(bold=not self.removed, strike=self.removed))
+        if self.removed:
+            line.append("  removed with the turn", Style(color=palette["muted"], italic=True))
+        else:
+            line.append(f"  {file_size(self.artifact['bytes'] or 0)} · {clean(self.artifact['mime'])}",
+                        Style(color=palette["muted"]))
+        return line
+
+    def mark_removed(self):
+        """A failed or cancelled turn deletes the artifacts it created."""
+        self.removed = True
+        for button in self.query(Button):
+            button.disabled = True
+        for label in self.query(".artifact-label"):  # Not there yet if the card is still mounting.
+            label.update(self.label())
+
+    def on_button_pressed(self, event: Button.Pressed):
+        event.stop()
+        if self.removed:
+            return
+        if event.button.has_class("artifact-copy"):
+            self.app.copy_to_clipboard(self.artifact["path"])
+            self.app.notify(f"Copied the path of {clean(self.artifact['name'])}.", timeout=2)
+        else:
+            self.app.preview_artifact(self.artifact["id"])
+        self.app.query_one(Composer).focus()  # Keep typing where you were.
+
+
+ARTIFACT_TOOLS = {"create_artifact", "generate_image"}
+
+
+def artifact_result(name, result, error):
+    """The artifact a successful create_artifact or generate_image call returned, or None."""
+    if name not in ARTIFACT_TOOLS or error:
+        return None
+    try:
+        value = json.loads(result)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, dict) and isinstance(value.get("id"), str) and isinstance(value.get("path"), str):
+        return value
+    return None
+
+
+class AttachmentBar(Horizontal):
+    """Files queued for the next message, beside the composer. Each chip's ✕ removes that file."""
+
+    class Remove(Message):
+        def __init__(self, index):
+            super().__init__()
+            self.index = index
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.paths = []
+
+    async def show(self, paths):
+        self.paths = list(paths)
+        await self.remove_children()
+        if self.paths:
+            await self.mount(Static(f"{self.app.glyphs.folder} attached", classes="attachment-title"))
+            await self.mount_all(
+                Button(f"{clean(path.name)[:28]} ✕" if self.app.glyphs.orb != "@" else f"{clean(path.name)[:28]} x",
+                       classes="attachment-chip", compact=True, flat=True, name=str(index),
+                       tooltip=f"Remove {clean(path)} (/detach {index + 1})")
+                for index, path in enumerate(self.paths))
+        self.display = bool(self.paths)
+
+    def on_button_pressed(self, event: Button.Pressed):
+        if event.button.has_class("attachment-chip"):
+            event.stop()
+            self.post_message(self.Remove(int(event.button.name)))
+
+
 class AssistantMessage(Vertical):
     """A full assistant turn: thinking indicator, optional reasoning, text segments and tool calls."""
 
@@ -503,6 +603,7 @@ class AssistantMessage(Vertical):
         self.stream = None
         self.segment = None
         self.tools = {}
+        self.artifacts = []
         self.reasoning_text = ""
         self.meta = ""
         self.started = time.monotonic()
@@ -618,6 +719,11 @@ class AssistantMessage(Vertical):
         tool = self.tools.get(call_id)
         if tool is not None:
             tool.finish(result, error)
+            artifact = artifact_result(tool.tool_name, result, error)
+            if artifact is not None:
+                card = ArtifactCard(artifact)
+                self.artifacts.append(card)
+                self.body.mount(card, after=tool)
         if self.thinking is not None:
             self.thinking.label = "thinking"
 

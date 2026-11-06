@@ -198,6 +198,105 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             provider.release.set()
             await pilot.pause(0.3)
         self.assertEqual(self.state.sessions(), [])  # The cancelled turn saved nothing.
+    async def test_queued_attachments_show_beside_the_composer_and_can_be_removed(self):
+        from textual.widgets import Button
+        from local_agent.tui.widgets import AttachmentBar, UserMessage
+
+        files = []
+        for name in ("a.txt", "b.txt", "c.txt"):
+            path = self.root / name
+            path.write_text(f"content of {name}", encoding="utf-8")
+            files.append(path.resolve())
+        provider = StreamingFake(text("Got them."))
+        app = self.make(provider, attachments=[files[0]])
+        async with app.run_test(size=(120, 40)) as pilot:
+            bar = app.query_one(AttachmentBar)
+            self.assertTrue(bar.display)  # --attach files show from the start.
+            for path in files[1:]:
+                await self.send(pilot, app, f'/attach "{path}"')
+            chips = list(bar.query(Button))
+            self.assertEqual([chip.label.plain.split()[0] for chip in chips], ["a.txt", "b.txt", "c.txt"])
+            self.assertTrue(all(chip.is_on_screen for chip in chips))
+            await pilot.click(chips[1])
+            await pilot.pause(0.1)
+            self.assertEqual(app.file_commands.pending, [files[0], files[2]])
+            await self.send(pilot, app, "/detach a.txt")
+            self.assertEqual(app.file_commands.pending, [files[2]])
+            await self.send(pilot, app, "/detach 5")
+            self.assertEqual(app.file_commands.pending, [files[2]])
+            await self.send(pilot, app, "Read it")
+            await self.wait_idle(pilot, app)
+            self.assertIn("c.txt", app.query(UserMessage).last().text)
+            self.assertFalse(app.file_commands.pending)
+            self.assertFalse(bar.display)
+        sent = provider.requests[0][0][-1]["content"]
+        self.assertIn("content of c.txt", sent)
+        self.assertNotIn("content of a.txt", sent)
+        self.assertNotIn("content of b.txt", sent)
+
+    async def test_attachments_stay_queued_and_visible_after_a_cancelled_turn(self):
+        from local_agent.tui.widgets import AttachmentBar
+        notes = self.root / "notes.txt"
+        notes.write_text("keep me", encoding="utf-8")
+        provider = StreamingFake(text("Too slow"))
+        app = self.make(provider, attachments=[notes])
+        async with app.run_test(size=(120, 40)) as pilot:
+            provider.release.clear()
+            await self.send(pilot, app, "Read the notes")
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            self.assertFalse(app.busy)
+            self.assertEqual(app.file_commands.pending, [notes.resolve()])
+            self.assertTrue(app.query_one(AttachmentBar).display)
+            provider.release.set()
+
+    async def test_generated_artifacts_offer_preview_and_copy_path(self):
+        from textual.widgets import Button
+        from local_agent.tui.widgets import ArtifactCard
+
+        page = "<h1>Report</h1><script>alert(1)</script>"
+        provider = StreamingFake(call("create_artifact", name="report.html", content=page), text("Saved it."),
+                                 call("create_artifact", "c2", name="draft.md", content="# Draft"),
+                                 RuntimeError("Model went away"))
+        app = self.make(provider)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.send(pilot, app, "Make a report")
+            await self.wait_idle(pilot, app)
+            card = app.query_one(ArtifactCard)
+            artifact = self.state.artifacts.list()["artifacts"][0]
+            self.assertEqual(card.artifact["id"], artifact["id"])
+            copy, preview = card.query_one(".artifact-copy", Button), card.query_one(".artifact-preview", Button)
+            await pilot.click(copy)
+            self.assertEqual(app.clipboard, artifact["path"])
+            with mock.patch("webbrowser.open", return_value=True) as browser:
+                await pilot.click(preview)
+                for _ in range(100):
+                    await pilot.pause(0.05)
+                    if browser.called:
+                        break
+            opened = Path(browser.call_args.args[0].removeprefix("file://").lstrip("/")
+                          if os.name == "nt" else browser.call_args.args[0].removeprefix("file://"))
+            wrapper = opened.read_text(encoding="utf-8")
+            self.assertIn("<iframe sandbox ", wrapper)
+            self.assertNotIn("allow-scripts", wrapper)
+            self.assertIn("Content-Security-Policy", wrapper)
+            self.assertIn("default-src &amp;#x27;none&amp;#x27;", wrapper)
+
+            await self.send(pilot, app, "Draft another")  # This turn fails, so its artifact is removed.
+            await self.wait_idle(pilot, app)
+            failed = list(app.query(ArtifactCard))[-1]
+            self.assertTrue(failed.removed)
+            self.assertTrue(all(button.disabled for button in failed.query(Button)))
+            self.assertEqual(len(self.state.artifacts.list()["artifacts"]), 1)
+
+            await self.send(pilot, app, "/artifacts")
+            await pilot.pause(0.1)
+            self.assertEqual(list(app.query(ArtifactCard))[-1].artifact["name"], "report.html")
+
+        app = self.make(StreamingFake())  # Saved turns show their artifacts again after a restart.
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.1)
+            self.assertEqual([card.artifact["name"] for card in app.query(ArtifactCard)], ["report.html"])
 
     async def test_copies_dragged_text_and_exact_code_from_a_reply(self):
         from textual.widgets import Button
