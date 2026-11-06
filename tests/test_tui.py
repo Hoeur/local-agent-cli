@@ -187,6 +187,18 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.file_commands.pending)
         self.assertIn("Test attachment content", provider.requests[1][0][-1]["content"])
 
+    async def test_quitting_during_a_turn_ignores_its_late_events(self):
+        provider = StreamingFake(text("A reply that arrives after quitting."), delay=0.01)
+        app = self.make(provider)
+        async with app.run_test(size=(100, 30)) as pilot:
+            provider.release.clear()
+            await self.send(pilot, app, "Slow question")
+            self.assertTrue(app.busy)
+            await pilot.press("ctrl+q")
+            provider.release.set()
+            await pilot.pause(0.3)
+        self.assertEqual(self.state.sessions(), [])  # The cancelled turn saved nothing.
+
     async def test_copies_dragged_text_and_exact_code_from_a_reply(self):
         from textual.widgets import Button
         from local_agent.tui.widgets import Composer, CopyableCodeBlock

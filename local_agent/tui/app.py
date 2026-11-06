@@ -717,7 +717,7 @@ class AgentApp(App):
         elif name == "help":
             self.action_help()
         elif name == "exit":
-            self.exit()
+            await self.action_quit()
         elif name == "new":
             await self.switch_session(argument or datetime.now().strftime("chat-%m%d-%H%M%S"))
         elif name == "session":
@@ -1559,16 +1559,25 @@ class AgentApp(App):
         else:
             self.notify("Press ctrl+q or type /exit to quit.", timeout=2)
 
-    def action_eof(self):
+    async def action_eof(self):
         if not self.query_one(Composer).text:
-            self.exit()
+            await self.action_quit()
 
     def get_system_commands(self, screen):
         for command in super().get_system_commands(screen):
             if command.title not in {"Theme", "Keys"}:  # Themes are offered by our own provider.
                 yield command
 
-    def on_unmount(self):
-        self.clock.stop()
+    def stop_turn(self):
+        """Cancel a running turn without waiting for it, so nothing from it is saved."""
         if self.token is not None:
             self.token.cancelled = True
+            self.token = self.current = None
+
+    async def action_quit(self):
+        self.stop_turn()  # Quitting mid-turn cancels it, like esc; a late reply is never saved.
+        self.exit()
+
+    def on_unmount(self):
+        self.clock.stop()
+        self.stop_turn()
