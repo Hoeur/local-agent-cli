@@ -108,13 +108,13 @@ async def send(pilot, app, text):
     await pilot.press("enter")
 
 
-async def answer_dialogs(pilot, app, decisions):
+async def answer_dialogs(pilot, app, decisions, seconds=20.0):
     """Answer each approval dialog in order with y or n, then wait for the turn to end."""
     from local_agent.tui.screens import ActionScreen
 
     seen = []
     while app.busy or decisions:
-        if not await wait_for(pilot, lambda: isinstance(app.screen, ActionScreen) or not app.busy):
+        if not await wait_for(pilot, lambda: isinstance(app.screen, ActionScreen) or not app.busy, seconds):
             raise SystemExit("FAIL: the turn did not finish")
         if isinstance(app.screen, ActionScreen):
             seen.append(app.screen.action["tool"])
@@ -182,7 +182,7 @@ async def live_workflow(root, model):
     app = make_app(data, workspace, base_url, model, "live")
     async with app.run_test(size=(120, 40)) as pilot:
         await send(pilot, app, "Reply with one short sentence that says hello.")
-        await answer_dialogs(pilot, app, [])
+        await answer_dialogs(pilot, app, [], seconds=300)  # A local model may need to load first.
         check(bool(app.last_reply.strip()), f"Ollama ({model}) answered in the terminal UI")
         await pilot.press("ctrl+q")
     app = make_app(data, workspace, base_url, model, "live")
