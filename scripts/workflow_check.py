@@ -6,9 +6,9 @@ Run it with the interpreter of a clean environment where only the wheel is insta
     python -I scripts/workflow_check.py --ollama qwen3:0.6b
 
 The default run serves a scripted model from a local OpenAI-compatible fixture, so every step is
-deterministic: it keeps a session task list, reads a file, makes an edit you approve, asks for a
-shell command you decline, copies the reply and a code block, then restarts the app and resumes the
-session. --ollama adds a live turn against a local Ollama model and resumes that session too.
+deterministic: it reads an attachment, creates and edits project files with approval, saves a
+separate artifact, checks declined actions, copies the reply and a code block, then restarts the
+app and resumes the session and task list. --ollama adds a live turn and resumes that session too.
 On Windows, --native-clipboard opts into replacing and checking the desktop clipboard.
 """
 import argparse
@@ -22,22 +22,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 CODE = 'def status():\n    return "ready ✓ សួស្តី"\n'
-REPLY = "Updated notes.txt and skipped the command.\n\n```python\n" + CODE + "```"
+REPLY = "Updated notes.txt and wrote blocked.css.\n\n```python\n" + CODE + "```"
+CSS = "body { color: navy; }\n"
+JS = 'const greeting = "hello";\n'
+WRITE_OUTCOME = "Workspace writes: Updated notes.txt · Created src/style.css · Declined blocked.css"
 TASKS = "[>] Inspect notes.txt\n[ ] Mark the release ready\n[ ] Run the check script"
 DONE_TASKS = "[x] Inspect notes.txt\n[x] Mark the release ready\n[ ] Run the check script"
+MANUAL_TASKS = DONE_TASKS.replace("[ ]", "[x]").splitlines()
 
 
-def call(name, call_id, **arguments):
+def call(tool, call_id, /, **arguments):
     return {"role": "assistant", "content": None, "tool_calls": [{
-        "id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+        "id": call_id, "type": "function", "function": {"name": tool, "arguments": json.dumps(arguments)}}]}
 
 
 SCRIPT = [
     call("todo", "c1", items=TASKS),
     call("read_file", "c2", path="notes.txt"),
     call("patch", "c3", path="notes.txt", old_text="status = draft", new_text="status = ready"),
-    call("terminal", "c4", command="python -c \"open('side_effect.txt', 'w').write('ran')\""),
-    call("todo", "c5", items=DONE_TASKS),
+    call("write_file", "c4", path="src/style.css", content=CSS),
+    call("create_artifact", "c5", name="example.js", content=JS),
+    call("write_file", "c6", path="blocked.css", content=CSS),
+    call("terminal", "c7", command="python -c \"open('side_effect.txt', 'w').write('ran')\""),
+    call("todo", "c8", items=DONE_TASKS),
     {"role": "assistant", "content": REPLY},
 ]
 
@@ -103,7 +110,9 @@ def make_app(data, workspace, base_url, model, session, native_clipboard=False):
 async def send(pilot, app, text):
     from local_agent.tui.widgets import Composer
 
-    app.query_one(Composer).load_text(text)
+    composer = app.query_one(Composer)
+    composer.focus()
+    composer.load_text(text)
     await pilot.press("enter")
 
 
@@ -128,19 +137,27 @@ async def scripted_workflow(root, base_url, native_clipboard=False):
     from textual.widgets import Button
 
     from local_agent.tui import clipboard
-    from local_agent.tui.widgets import AssistantMessage, CopyableCodeBlock, UserMessage
+    from local_agent.tui.widgets import AssistantMessage, AttachmentBar, CopyableCodeBlock, NoteCard, UserMessage
 
     data, workspace = root / "data", root / "workspace"
     workspace.mkdir()
     (workspace / "notes.txt").write_text("release notes\nstatus = draft\n", encoding="utf-8")
+    brief = workspace / "brief.txt"
+    brief.write_text("Add a navy stylesheet and a separate JavaScript example.", encoding="utf-8")
     Fixture.replies[:] = [dict(item) for item in SCRIPT]
 
     app = make_app(data, workspace, base_url, "fixture-model", "workflow", native_clipboard)
     async with app.run_test(size=(120, 40)) as pilot:
+        await send(pilot, app, f'/attach "{brief}"')
+        check(app.query_one(AttachmentBar).display, "the attachment is queued in the composer")
         await send(pilot, app, "Mark the release notes ready, then run the check script.")
-        tools = await answer_dialogs(pilot, app, ["y", "n"])
-        check(tools == ["patch", "terminal"], "the edit and the command each asked for approval")
+        tools = await answer_dialogs(pilot, app, ["y", "y", "n", "n"])
+        check(tools == ["patch", "write_file", "write_file", "terminal"],
+              "each workspace change and command asked for approval")
         check(app.last_reply == REPLY, "the final reply arrived")
+        check(any(str(note.content) == WRITE_OUTCOME for note in app.query(AssistantMessage).last().query(NoteCard)),
+              "the recorded write outcomes appear separately from the model reply")
+        check(not app.file_commands.pending, "the successful turn cleared the attachment queue")
         await pilot.press("f4")
         check(app.clipboard == REPLY, "F4 copied the latest reply")
         if native_clipboard:
@@ -151,14 +168,27 @@ async def scripted_workflow(root, base_url, native_clipboard=False):
         check(app.clipboard == CODE, "Copy code copied the block with its indentation and Unicode")
         if native_clipboard:
             check(clipboard.paste() == clipboard.windows_text(CODE), "the Windows clipboard holds the code")
+        await send(pilot, app, "/todo done 3")
+        check(await wait_for(pilot, lambda: app.state.todo("workflow") == MANUAL_TASKS),
+              "the task changed through the manual todo command")
         await pilot.press("ctrl+q")
 
     check((workspace / "notes.txt").read_text(encoding="utf-8") == "release notes\nstatus = ready\n",
           "the approved edit changed notes.txt")
+    check((workspace / "src" / "style.css").read_text(encoding="utf-8") == CSS,
+          "the approved stylesheet was created inside the project")
+    artifact, = app.state.artifacts.list()["artifacts"]
+    check(artifact["name"] == "example.js" and app.state.artifacts.read(artifact["id"])["text"] == JS,
+          "the standalone JavaScript artifact preserved its filename and content")
+    check(not (workspace / "blocked.css").exists(), "the declined write did not create a file")
     check(not (workspace / "side_effect.txt").exists(), "the declined command had no side effect")
+    check(any("Add a navy stylesheet" in m["content"] for m in Fixture.requests[0]["messages"]
+              if m.get("role") == "user" and isinstance(m.get("content"), str)),
+          "the attachment reached the model")
     declined = [m for p in Fixture.requests for m in p["messages"]
-                if m.get("role") == "tool" and m.get("tool_call_id") == "c4"]
-    check(bool(declined) and "declin" in declined[-1]["content"].lower(), "the model was told the command was declined")
+                if m.get("role") == "tool" and m.get("tool_call_id") in {"c6", "c7"}
+                and "declin" in m["content"].lower()]
+    check({m["tool_call_id"] for m in declined} == {"c6", "c7"}, "the model received both declines")
 
     app = make_app(data, workspace, base_url, "fixture-model", "workflow")
     async with app.run_test(size=(120, 40)) as pilot:
@@ -166,7 +196,10 @@ async def scripted_workflow(root, base_url, native_clipboard=False):
         check(len(app.query(UserMessage)) == 1 and len(app.query(AssistantMessage)) == 1,
               "the restarted app reloaded the saved transcript")
         check(app.last_reply == REPLY, "the resumed session can copy its last reply")
-        check(app.state.todo("workflow") == DONE_TASKS.splitlines(), "the saved task list reloaded")
+        check(any(str(note.content) == WRITE_OUTCOME for note in app.query(AssistantMessage).last().query(NoteCard)),
+              "the recorded write outcomes reloaded with the transcript")
+        check(app.state.todo("workflow") == MANUAL_TASKS,
+              "the manual task edit survived a restart")
         await send(pilot, app, "/todo")
         await pilot.pause(0.3)
         await pilot.press("ctrl+q")

@@ -63,6 +63,34 @@ class FileTests(unittest.TestCase):
         self.assertNotIn("allow-scripts", preview)
         self.assertIn("&lt;h1&gt;Sample&lt;/h1&gt;", preview)
 
+    def test_text_artifacts_keep_requested_filenames_and_preview_as_source(self):
+        examples = {
+            "style.css": ("/* <style> */", "text/css"),
+            "app.js": ('const html = "<script>";', "text/plain"),
+            "types.d.ts": ("export type Name = string;", "text/plain"),
+            "settings.toml": ('name = "Local Agent"', "text/plain"),
+            "Dockerfile": ("FROM scratch", "text/plain"),
+        }
+        for name, (source, _) in examples.items():
+            provider = StreamingFake(call("create_artifact", name=name, content=source), text("Saved"))
+            Agent(provider, self.state).turn("test", f"Save {name} as an artifact")
+
+        artifacts = {item["name"]: item for item in self.state.artifacts.list()["artifacts"]}
+        self.assertEqual(artifacts.keys(), examples.keys())
+        for name, (source, mime) in examples.items():
+            with self.subTest(name=name):
+                artifact = artifacts[name]
+                self.assertEqual(artifact["mime"], mime)
+                self.assertEqual(self.state.artifacts.read(artifact["id"])["text"], source)
+        preview = self.state.artifacts.preview(artifacts["app.js"]["id"]).read_text(encoding="utf-8")
+        self.assertIn("&lt;pre&gt;const html = &amp;quot;&amp;lt;script&amp;gt;&amp;quot;;&lt;/pre&gt;", preview)
+
+    def test_text_artifacts_reject_image_filenames_and_paths(self):
+        with self.assertRaisesRegex(ValueError, "generate_image"):
+            self.state.artifacts.create("logo.png", "text")
+        with self.assertRaisesRegex(ValueError, "simple artifact filename"):
+            self.state.artifacts.create("../outside.js", "text")
+
     def test_cancelled_turn_removes_only_its_artifacts(self):
         kept = self.state.artifacts.create("report.txt", "Previous artifact")
         provider = StreamingFake(call("create_artifact", name="report.txt", content="Uncommitted"), text("Saved"))

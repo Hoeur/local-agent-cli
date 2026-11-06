@@ -17,15 +17,15 @@ ollama pull qwen3:0.6b
 Install Local Agent with the terminal UI from the [latest release](https://github.com/Hoeur/local-agent-cli/releases/latest):
 
 ```powershell
-python -m pip install "local-agent-cli[tui] @ https://github.com/Hoeur/local-agent-cli/releases/download/v0.3.1/local_agent_cli-0.3.1-py3-none-any.whl"
+python -m pip install "local-agent-cli[tui] @ https://github.com/Hoeur/local-agent-cli/releases/download/v0.3.2/local_agent_cli-0.3.2-py3-none-any.whl"
 ```
 
-If you downloaded the wheel, install the file with `python -m pip install "local_agent_cli-0.3.1-py3-none-any.whl[tui]"` from the folder that holds it. Then open the project folder you want to work in, save the model setting, check it, and start a session there. Settings, sessions and task lists are kept in that folder's `.agent` directory.
+If you downloaded the wheel, install the file with `python -m pip install "local_agent_cli-0.3.2-py3-none-any.whl[tui]"` from the folder that holds it. Then open the project folder you want to work in, save the model setting, check it, and start a session there. Settings, sessions and task lists are kept in that folder's `.agent` directory.
 
 ```powershell
 local-agent setup --model qwen3:0.6b
 local-agent doctor
-local-agent chat --session dev --workspace . --all
+local-agent chat --session dev --workspace . --write
 ```
 
 If Windows can't find `local-agent`, pip installed it into a Scripts folder that isn't on `PATH`; use `python -m local_agent` in its place. `doctor` says what to do when Ollama isn't running or the model isn't downloaded yet.
@@ -43,6 +43,14 @@ python -m local_agent chat --session dev --workspace . --all
 ```
 
 Use the `demo` command for basic chat or the `dev` command to enable workspace access, file edits, shell commands, web access, and learning.
+
+To build and install a wheel from this checkout:
+
+```powershell
+python -m pip install build
+python -m build --wheel
+python -m pip install "dist/local_agent_cli-0.3.2-py3-none-any.whl[tui]"
+```
 
 ![Local Agent terminal UI](docs/screenshots/welcome.png)
 
@@ -66,6 +74,7 @@ Tools are organized into groups. Only the groups you enable are sent to the mode
 ### Approvals and safety
 
 - **File changes and commands** are approved one at a time, before they happen. The prompt shows the diff, or the full command. If you decline, nothing changes and the model is told to stop and ask you what to do. Without a terminal to ask, every action is declined.
+- **Workspace writes** show a result recorded by Local Agent alongside the model's reply. Check this result for files that were created, updated, declined, or failed. The result is saved with the session.
 - **`--yes`** saves memory and skill changes and allows actions without asking, with one exception: commands that look destructive are flagged and always ask. These include recursive deletes, disk formatting, `git push --force` or `reset --hard`, piping a download into a shell, `sudo`, force-killing processes, and changes to the registry or services. The full list is `DANGEROUS` in `local_agent/tools.py`. Without a terminal to ask, flagged commands are declined. This is a safety net for mistakes, not a sandbox. A command you allow runs with your user's permissions and can reach outside the workspace.
 - **File tools** stay inside the workspace. Paths must be relative, with forward slashes (backslashes are converted). Hidden files and folders such as `.git` and `.env`, Windows device names, and links that lead outside are refused. Writes go through a temporary file, so a failed write leaves the original intact. `patch` also matches text written with `\n` against files that use Windows `\r\n` line endings, and keeps the file's own line endings.
 - **Web tools** fetch pages read-only and follow up to five redirects. They connect directly to checked public addresses on every hop and skip system HTTP proxies. Web content is untrusted data.
@@ -95,7 +104,7 @@ In an interactive terminal, `chat` opens a full-screen interface. It includes:
 - approval dialogs for memory and skill changes and for each file change and command
 - five themes and three motion levels
 
-`esc` cancels a running turn without saving anything, and stops a running command along with its child processes. Press `f1` for every shortcut. `f3` or `/hologram` shows, hides, resizes and switches the hologram's renderer: Braille 3D, ASCII, or Sixel/Kitty graphics with `pip install -e ".[hologram-image]"`.
+`esc` cancels a running turn, discards its conversation and staged changes, and stops a running command along with its child processes. Workspace edits already applied stay on disk. Press `f1` for every shortcut. `f3` or `/hologram` shows, hides, resizes and switches the hologram's renderer: Braille 3D, ASCII, or Sixel/Kitty graphics with `pip install -e ".[hologram-image]"`.
 
 The UI needs the optional `tui` extra ([Textual](https://textual.textualize.io/) and `psutil`). Without Textual, or with `--plain`, or when input or output is piped, `chat` uses the line-based interface, which keeps the original output format when piped. `--no-stream` requests whole replies from providers that handle streaming poorly. The interface works in Windows Terminal, macOS Terminal, Linux terminals and over SSH, where it defaults to reduced motion. See [docs/TUI.md](docs/TUI.md) for the layout, keys, commands, design system and architecture.
 
@@ -118,7 +127,7 @@ local-agent chat --session vision --max-rounds 0 --attach .\photo.png "Describe 
 
 Use `/attach PATH`, `/attachments`, and `/detach` in either chat interface; `/detach 2` or `/detach notes.txt` removes one file and `/detach` alone removes them all. Quote paths with spaces. The terminal UI shows queued files just above the composer, and clicking a file there removes it. Files are read at submission and sent to the active model provider. The queue clears when a turn succeeds and stays available after an error or cancellation. PNG, JPEG, WebP, and GIF inputs require a vision-capable model. Use `--max-rounds 0` for models that cannot accept tools alongside an image. The data directory caches image bytes so session history can replay them after the original file moves. Each message supports four attachments, up to 5 MB per file, 10 MB of images, and 12,000 combined text characters. Replayed images share a 10 MB per-request limit.
 
-Ask the agent to save an HTML, Markdown, text, CSV, JSON, or SVG artifact. The file is stored under `.agent/artifacts/` or the selected `--data-dir`, with a unique ID for each version. In the terminal UI each artifact a turn creates appears under its tool call with **Preview** and **Copy path** buttons, and `/artifacts` shows the latest ten the same way. Use `/artifact ID` or `/open ID` in either chat interface, or the CLI commands below.
+Ask the agent to save a UTF-8 text artifact such as `index.html`, `style.css`, `app.js`, `settings.toml`, or `Dockerfile`. Use a simple filename without directories. The file is stored under `.agent/artifacts/` or the selected `--data-dir`, with a unique ID for each version. In the terminal UI each artifact a turn creates appears under its tool call with **Preview** and **Copy path** buttons, and `/artifacts` shows the latest ten the same way. Use `/artifact ID` or `/open ID` in either chat interface, or the CLI commands below.
 
 ```powershell
 local-agent artifacts
@@ -126,7 +135,7 @@ local-agent artifact ARTIFACT_ID
 local-agent artifact ARTIFACT_ID --open
 ```
 
-Browser previews display HTML, SVG, and images in a sandbox with scripts and external resources blocked. Text, Markdown, CSV, and JSON previews show their source. A failed or cancelled turn removes artifacts created by that turn. Text artifacts support up to 24,000 characters, subject to the model context budget.
+Browser previews display HTML, SVG, and generated images in a sandbox with scripts and external resources blocked. Other text artifacts show their source. A failed or cancelled turn removes artifacts created by that turn. Text artifacts support up to 24,000 characters, subject to the model context budget.
 
 ### Optional image generation
 
@@ -253,7 +262,7 @@ Earlier live verification with Ollama and `qwen3:0.6b` covered these, through in
 - reading a workspace file
 - session listing and transcript viewing
 
-Test prompts used Qwen's `/no_think` suffix. The tools added for the MVP (writing and patching files, the terminal, web access, the task list and session search) are covered by the automated tests and a scripted run against a local OpenAI-compatible endpoint. They have not yet been run against a live model.
+Windows testing with live Ollama also covered a project edit from an attachment, an approval and a decline, and session resume. The installed-wheel workflow check exercises project file creation, separate artifacts, approval outcomes, clipboard controls, and task list persistence against a scripted endpoint. Shell and web tools are covered by automated tests.
 
 Automated regression checks cover:
 

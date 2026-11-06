@@ -113,11 +113,27 @@ class FileToolTests(Base):
         Agent(provider, self.state, self.workspace, write=True).turn("s", "Write it")  # No confirm: declined.
         self.assertFalse((self.workspace / "x.txt").exists())
 
+    def test_write_outcomes_are_saved_separately_and_not_sent_to_the_provider(self):
+        provider = Scripted(call("write_file", path="blocked.css", content="body {}"),
+                            call("write_file", "c2", path="../outside.css", content="body {}"),
+                            text("I created both stylesheets."), text("Okay."))
+        agent = self.agent(provider, write=True, confirm=self.confirm(False))
+        reply = agent.turn("s", "Create both files")
+        self.assertEqual(reply, "I created both stylesheets.")
+        saved = list(self.state.transcript("s"))[-1]
+        self.assertEqual(saved["workspace_writes"], "Workspace writes: Declined blocked.css · Failed ../outside.css")
+        self.assertEqual(list(self.workspace.iterdir()), [])
+        agent.turn("s", "Continue")
+        self.assertTrue(any(message.get("content") == reply for message in provider.requests[-1][0]))
+        self.assertFalse(any("workspace_writes" in message for message in provider.requests[-1][0]))
+
     def test_write_refuses_hidden_linked_and_outside_paths(self):
         files = tools.Workspace(self.workspace)
-        for path in ("../escape.txt", ".git/config", "a/../../escape.txt", "C:/x.txt", ".", "con"):
+        for path in ("../escape.txt", ".git/config", "a/../../escape.txt", "C:/x.txt", "con"):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 files.plan_write(path, "x")
+        with self.assertRaisesRegex(ValueError, "Include the filename"):
+            files.plan_write(".", "x")
         (self.workspace / "dir").mkdir()
         with self.assertRaises(ValueError):
             files.plan_write("dir", "x")
