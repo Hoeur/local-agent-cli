@@ -4,6 +4,7 @@ Turns run on a daemon thread so input and animation stay responsive. The agent r
 through Agent(on_event=...) and those events are posted to the UI thread as messages. Cancelling
 marks the turn's token; the next event raised from the agent stops it before anything is saved.
 """
+import asyncio
 import json
 import os
 import sqlite3
@@ -27,7 +28,9 @@ from textual.widgets.option_list import Option
 
 from .. import providers
 from ..agent import MAX_TOOL_ROUNDS, TOOLS, Agent, TurnCancelled, tool_names
+from ..attachments import message_text
 from ..config import load_config, read_settings, save_config, set_active
+from ..file_commands import FILE_COMMANDS, FileCommands
 from . import commands, effects, hologram
 from .holoview import HoloHud, HoloPanel, ViewControl, make_view
 from .screens import ActionScreen, ApprovalScreen, FilePreview, HelpScreen
@@ -215,8 +218,9 @@ class AgentApp(App):
 
     def __init__(self, provider, state, data_dir: Path, config, session, workspace=None, learn=False,
                  auto_approve=False, prefs=None, environ=None, image_support=None, write=False, shell=False,
-                 web=False, max_rounds=MAX_TOOL_ROUNDS):
+                 web=False, max_rounds=MAX_TOOL_ROUNDS, attachments=()):
         super().__init__()
+        self.file_commands = FileCommands(state, attachments)
         environ = os.environ if environ is None else environ
         self.environ = environ
         self.provider = provider
@@ -344,8 +348,10 @@ class AgentApp(App):
         The welcome screen has its own, larger hologram, so the panel waits until it is gone."""
         if width is None:
             width, height = self.size
-        panel = self.query_one(HoloPanel)
-        sidebar = self.query_one(Sidebar)
+        panel = next(iter(self.query(HoloPanel)), None)
+        sidebar = next(iter(self.query(Sidebar)), None)
+        if panel is None or sidebar is None:
+            return  # A renderer change can finish while the screen is unmounting.
         # A docked sidebar takes layout space whether it is pinned or opened as an overlay.
         docked = self.sidebar_width if self.sidebar_visible or sidebar.display else 0
         room = width - docked - 58  # Keep at least 58 columns for the conversation.
@@ -354,8 +360,9 @@ class AgentApp(App):
                 and panel_width >= HOLOGRAM_WIDTHS[0])
         if show:
             panel.styles.width = panel_width + 1  # Plus the left border.
-            view = panel.query_one("#side-holo")
-            view.styles.height = max(7, min(height - 9, round(panel_width / 2.15)))
+            view = next(iter(panel.query("#side-holo")), None)
+            if view is not None:
+                view.styles.height = max(7, min(height - 9, round(panel_width / 2.15)))
         panel.display = show
         for welcome in self.query(Welcome):
             welcome.layout_hero()
@@ -391,7 +398,7 @@ class AgentApp(App):
             chat.styles.animate("opacity", 1.0, duration=0.3)
 
     async def render_turn(self, chat, turn):
-        await chat.mount(UserMessage(turn[0].get("content", "")))
+        await chat.mount(UserMessage(message_text(turn[0])))
         reply = AssistantMessage(when="", live=False)
         await chat.mount(reply)
         for message in turn[1:]:
@@ -495,7 +502,10 @@ class AgentApp(App):
 
     def refresh_tools(self, running=None):
         palette, glyphs = self.palette, self.glyphs
-        enabled = set(tool_names(self.learn, self.workspace is not None, self.write, self.shell, self.web))
+        enabled = set()
+        if self.max_rounds:
+            enabled.update(tool_names(self.learn, self.workspace is not None, self.write, self.shell, self.web,
+                                      bool(self.config.get("image_model"))))
         text = Text()
         for name in TOOLS:
             if name == running:
@@ -685,7 +695,20 @@ class AgentApp(App):
         if argument is None:
             self.notify(f"Unknown command /{name}. Try /help.", severity="error", timeout=3)
             return
-        if name == "help":
+        if name in FILE_COMMANDS:
+            if self.busy and name in {"attach", "detach"}:
+                self.notify("Wait for the current turn before changing attachments.", severity="warning")
+                return
+            try:
+                if name == "open":
+                    body = await asyncio.to_thread(self.file_commands.handle, f"/{name} {argument}")
+                else:
+                    body = self.file_commands.handle(f"/{name} {argument}")
+            except (OSError, RuntimeError, ValueError) as error:
+                self.notify(clean(str(error)), severity="error")
+                return
+            await self.note(body, "Files", literal=True)
+        elif name == "help":
             self.action_help()
         elif name == "exit":
             self.exit()
@@ -925,14 +948,16 @@ class AgentApp(App):
         self.refresh_sidebar()
         self.check_connection(False)
 
-    async def note(self, markdown, title):
+    async def note(self, markdown, title, *, literal=False):
         await self.hide_welcome()
         chat = self.query_one(ChatLog)
         palette = self.palette
         header = Text()
         header.append(f"{self.glyphs.arrow} {title}", Style(color=palette["secondary"], bold=True))
-        await chat.mount(NoteCard(Group(header, RichMarkdown(markdown, code_theme="monokai"
-                                                              if not palette.get("light") else "default")), "card"))
+        body = Text(clean(markdown)) if literal else RichMarkdown(
+            markdown, code_theme="monokai" if not palette.get("light") else "default"
+        )
+        await chat.mount(NoteCard(Group(header, body), "card"))
         chat.anchor()
 
     async def hide_welcome(self):
@@ -948,17 +973,21 @@ class AgentApp(App):
     async def start_turn(self, prompt):
         await self.hide_welcome()
         chat = self.query_one(ChatLog)
-        await chat.mount(UserMessage(prompt, stamp()))
+        attachments = tuple(self.file_commands.pending)
+        display = prompt
+        if attachments:
+            display += "\n[Attached files: " + ", ".join(path.name for path in attachments) + "]"
+        await chat.mount(UserMessage(display, stamp()))
         reply = AssistantMessage(live=True)
         await chat.mount(reply)
         chat.anchor()
         token = TurnToken()
         self.token, self.current = token, reply
         self.set_state("thinking", "")
-        threading.Thread(target=self.turn_thread, args=(token, prompt, self.session, self.learn),
+        threading.Thread(target=self.turn_thread, args=(token, prompt, self.session, self.learn, attachments),
                          name="agent-turn", daemon=True).start()
 
-    def turn_thread(self, token, prompt, session, learn):
+    def turn_thread(self, token, prompt, session, learn, attachments):
         lock = threading.Lock()
         batch = None
 
@@ -994,8 +1023,8 @@ class AgentApp(App):
             agent = Agent(self.provider, self.state, self.workspace, self.config["context_chars"],
                           (lambda changes: True) if self.auto_approve else approve, on_event,
                           confirm=confirm, write=self.write, shell=self.shell, web=self.web,
-                          max_rounds=self.max_rounds)
-            content = agent.turn(session, prompt, learn)
+                          max_rounds=self.max_rounds, image_provider=providers.make_image_provider(self.config))
+            content = agent.turn(session, prompt, learn, attachments=attachments)
         except Exception as caught:  # Shown in the UI; the agent has already discarded the turn.
             error = caught
         self.post_message(TurnFinished(token, content, error))
@@ -1118,6 +1147,7 @@ class AgentApp(App):
         status.estimated = self.estimated
         chat = self.query_one(ChatLog)
         if message.error is None:
+            self.file_commands.pending.clear()
             tokens = token.completion_tokens
             meta = f"{elapsed:.1f}s" + (f" · {'~' if token.estimated else ''}{tokens} tok" if tokens else "")
             await reply.finish(meta)

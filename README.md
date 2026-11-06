@@ -23,11 +23,13 @@ Tools are organized into groups. Only the groups you enable are sent to the mode
 | Group | Enabled by | Tools | What they do |
 |---|---|---|---|
 | core | always | `read_skill`, `todo`, `session_search` | Load a saved skill. Keep a task list for multi-step work; it's saved with the session and shown to the model on later turns. Search earlier conversations in every session. |
+| artifacts | always | `create_artifact`, `list_artifacts`, `read_artifact` | Create and browse deliverables in the agent data directory. |
+| image | configured image model | `generate_image` | Generate an image artifact with an Images API endpoint. |
 | learn | `--learn` | `remember`, `forget`, `save_skill`, `delete_skill` | Propose memory and skill changes, saved at the end of the turn after you approve them. |
 | workspace | `--workspace DIR` | `list_files`, `read_file`, `search_files` | List folders, read files with line numbers and paging, search file contents with a regex or names with a glob. Read-only. |
 | write | `--write` | `write_file`, `patch` | Create or replace a file, or replace one exact, unique piece of text in a file. You see the diff and approve each change before it's made. |
 | shell | `--shell` | `terminal` | Run a command in the workspace (`cmd.exe` on Windows, `/bin/sh` elsewhere) with no input, a timeout (60 s by default, up to 600 s) and capped output. You approve each command. |
-| web | `--web` | `web_search`, `web_extract` | Search the web (DuckDuckGo's HTML page) and read a page as plain text. |
+| web | `--web` | `web_search`, `web_extract` | Search DuckDuckGo and read pages as plain text. If DuckDuckGo challenges the default automated request, the result is labeled and limited to English Wikipedia. Set `AGENT_SEARCH_URL` to use your own DuckDuckGo-compatible HTML search endpoint. |
 
 `--all` is shorthand for `--learn --write --shell --web`. `--write` and `--shell` need `--workspace`. In the full-screen UI, `/write`, `/shell`, `/web` and `/learn` switch the groups on and off between turns.
 
@@ -74,6 +76,38 @@ The system monitor stays at the top of the sidebar and refreshes once per second
 | ![Tool calls and Markdown](docs/screenshots/conversation.png) | ![Approving a saved skill](docs/screenshots/approval.png) |
 | ![Command palette](docs/screenshots/palette.png) | ![Daylight theme and an error card](docs/screenshots/daylight.png) |
 | ![Approving a command](docs/screenshots/action.png) | |
+
+## Attachments and artifacts
+
+Attach local images or UTF-8 text with repeatable `--attach` options.
+
+```powershell
+local-agent chat --session reports --attach .\notes.txt 'Summarize these notes and save report.md.'
+local-agent chat --session vision --max-rounds 0 --attach .\photo.png 'Describe the photo.'
+```
+
+Use `/attach PATH`, `/attachments`, and `/detach` in either chat interface. Quote paths with spaces. Files are read at submission and sent to the active model provider. The queue clears when a turn succeeds and stays available after an error or cancellation. PNG, JPEG, WebP, and GIF inputs require a vision-capable model. Use `--max-rounds 0` for models that cannot accept tools alongside an image. The data directory caches image bytes so session history can replay them after the original file moves. Each message supports four attachments, up to 5 MB per file, 10 MB of images, and 12,000 combined text characters. Replayed images share a 10 MB per-request limit.
+
+Ask the agent to save an HTML, Markdown, text, CSV, JSON, or SVG artifact. The file is stored under `.agent/artifacts/` or the selected `--data-dir`, with a unique ID for each version. Use `/artifacts`, `/artifact ID`, or `/open ID` in chat, or the CLI commands below.
+
+```powershell
+local-agent artifacts
+local-agent artifact ARTIFACT_ID
+local-agent artifact ARTIFACT_ID --open
+```
+
+Browser previews display HTML, SVG, and images in a sandbox with scripts and external resources blocked. Text, Markdown, CSV, and JSON previews show their source. A failed or cancelled turn removes artifacts created by that turn. Text artifacts support up to 24,000 characters, subject to the model context budget.
+
+### Optional image generation
+
+Set an image model on a chat profile to enable `generate_image`.
+
+```powershell
+local-agent setup --provider custom --base-url https://chat.example/v1 --model CHAT_MODEL `
+    --image-base-url https://images.example/v1 --image-model IMAGE_MODEL
+```
+
+The endpoint must implement `POST /images/generations` and return an inline base64 image in `data[0].b64_json` (up to 10 MB). Set `AGENT_IMAGE_API_KEY` for a separate image endpoint. With no image URL, the agent uses the chat base URL, and it only reuses the chat key when both URLs match. `AGENT_IMAGE_MODEL` and `AGENT_IMAGE_BASE_URL` override saved settings.
 
 ## Models and settings
 
@@ -212,7 +246,6 @@ The following features are not part of this MVP:
 - `execute_code`
 - scheduled jobs
 - messaging gateways
-- vision and image generation
 - text-to-speech
 - MCP servers
 - file-based `MEMORY.md` / `USER.md` memory

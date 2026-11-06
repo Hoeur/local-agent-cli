@@ -179,6 +179,20 @@ def mask(key):
     return f"…{key[-4:]}" if key and len(key) > 8 else "set"
 
 
+def make_image_provider(config):
+    from .provider import ImageProvider
+
+    model = config.get("image_model")
+    if not model:
+        return None
+    chat_url = config["base_url"].rstrip("/")
+    image_url = (config.get("image_base_url") or chat_url).rstrip("/")
+    key = os.environ.get("AGENT_IMAGE_API_KEY", "").strip()
+    if not key and image_url == chat_url:
+        key, _ = resolve_key(config)
+    return ImageProvider(image_url, model, key)
+
+
 def make_provider(config, require_key=True):
     """Build the provider object for a loaded profile."""
     provider = config.get("provider") or guess_provider(config.get("base_url"))

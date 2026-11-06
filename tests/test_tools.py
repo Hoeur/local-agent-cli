@@ -191,7 +191,8 @@ class FileToolTests(Base):
         self.assertIn("patch", names(write=True))
         self.assertIn("terminal", names(shell=True))
         self.assertIn("web_extract", names(web=True))
-        self.assertEqual(Agent(None, self.state).tool_names(), ["read_skill", "todo", "session_search"])
+        self.assertEqual(Agent(None, self.state).tool_names(),
+                         ["read_skill", "todo", "session_search", "create_artifact", "list_artifacts", "read_artifact"])
 
 
 class TerminalTests(Base):

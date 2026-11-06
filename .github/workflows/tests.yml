@@ -13,6 +13,10 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12", "3.13"]
         extra: ["", "[tui]"]
+        include:
+          - os: windows-latest
+            python: "3.11"
+            extra: "[tui,hologram-image]"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

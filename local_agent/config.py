@@ -17,7 +17,8 @@ from pathlib import Path
 DEFAULT_CONTEXT_CHARS = 12_000
 MIN_CONTEXT_CHARS = 4_000
 MAX_CONTEXT_CHARS = 2_000_000
-PROFILE_FIELDS = ("provider", "base_url", "model", "wire", "context_chars", "max_tokens")
+IMAGE_FIELDS = ("image_model", "image_base_url")
+PROFILE_FIELDS = ("provider", "base_url", "model", "wire", "context_chars", "max_tokens", *IMAGE_FIELDS)
 
 
 def parse_context_chars(value):
@@ -53,7 +54,8 @@ def read_settings(directory: Path):
     if not isinstance(settings, dict):
         raise ValueError("The saved config must be a JSON object.")
     if "profiles" not in settings:
-        profile = {key: settings[key] for key in ("base_url", "model", "context_chars") if key in settings}
+        profile = {key: settings[key] for key in ("base_url", "model", "context_chars", *IMAGE_FIELDS)
+                   if key in settings}
         if not profile:
             return {"active": None, "profiles": {}}
         name = guess_provider(profile.get("base_url"))
@@ -108,12 +110,17 @@ def load_config(directory: Path, profile: str | None = None):
         os.environ.get("AGENT_CONTEXT_CHARS", config.get("context_chars", DEFAULT_CONTEXT_CHARS))
     )
     config["max_tokens"] = parse_max_tokens(config.get("max_tokens"))
+    for key in IMAGE_FIELDS:
+        value = os.environ.get(f"AGENT_{key.upper()}", config.get(key, ""))
+        if not isinstance(value, str):
+            raise ValueError(f"The {key} setting must be text.")
+        config[key] = value.strip()
     return config
 
 
 def save_config(directory: Path, base_url: str, model: str, context_chars: int = DEFAULT_CONTEXT_CHARS, *,
                 provider: str | None = None, wire: str | None = None, name: str | None = None,
-                max_tokens: int | None = None):
+                max_tokens: int | None = None, image_model=None, image_base_url=None):
     """Save a profile and make it the active one."""
     from .providers import check_profile_name, guess_provider
 
@@ -126,6 +133,11 @@ def save_config(directory: Path, base_url: str, model: str, context_chars: int =
         profile["wire"] = wire
     if parse_max_tokens(max_tokens):
         profile["max_tokens"] = max_tokens
+    previous = settings["profiles"].get(name, {})
+    for key, value in zip(IMAGE_FIELDS, (image_model, image_base_url)):
+        value = previous.get(key) if value is None else value.strip()
+        if value:
+            profile[key] = value
     settings["profiles"][name] = profile
     settings["active"] = name
     write_settings(directory, settings)

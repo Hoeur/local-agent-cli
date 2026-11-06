@@ -104,8 +104,11 @@ class Spinner:
             self.label = "thinking" if not data["round"] else f"thinking · round {data['round'] + 1}"
 
 
-def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint=False):
+def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint=False, attachments=()):
     """Interactive line-based chat. Returns an exit code."""
+    from .file_commands import FileCommands
+
+    files = FileCommands(agent.state, attachments)
     out = Style(sys.stdout)
     styled = out.enabled and sys.stdin.isatty()
     if styled:
@@ -139,8 +142,13 @@ def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint
             continue
         spinner.label = "thinking"
         try:
+            note = files.handle(prompt)
+            if note is not None:
+                print("\n".join(printable(line) for line in note.splitlines()))
+                continue
             with spinner:
-                reply = agent.turn(session, prompt, learn)
+                reply = agent.turn(session, prompt, learn, attachments=files.pending)
+            files.pending.clear()
             print((out("Agent> ", BOLD, CYAN) if styled else "Agent> ") + reply)
         except KeyboardInterrupt:
             spinner.stop()

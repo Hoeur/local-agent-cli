@@ -13,7 +13,7 @@ dependencies = []
 # The full-screen terminal UI. The core agent and the line-based chat stay standard-library only.
 tui = ["textual>=8.0,<9", "psutil>=6.0"]
 # Optional: render the hologram through Sixel or the Kitty graphics protocol (/hologram image).
-hologram-image = ["textual>=8.0,<9", "textual-image>=0.14; python_version >= '3.12'", "pillow>=10.3"]
+hologram-image = ["textual>=8.0,<9", "textual-image>=0.12", "pillow>=10.3"]
 
 [project.scripts]
 local-agent = "local_agent.__main__:main"

@@ -76,7 +76,7 @@ Every transition eases over about 0.3 s: each visual parameter (spin, energy, pa
 |---|---|---|
 | `braille` (enhanced 3D) | Default on any Unicode terminal | Each cell holds a 2 × 4 grid of Braille dots, so sub-pixels are square and the sphere is round. True-color brightness per cell, depth cues and a background glow behind the core. |
 | `ascii` (universal fallback) | Classic Windows console, Linux virtual console (`TERM=linux`), `TERM=dumb`, or chosen | One sample per cell, ASCII characters only (`.:-=+*#%@`), same scene and states. |
-| `image` (high fidelity, optional) | Chosen with `/hologram image` on a terminal that reports Sixel or Kitty graphics | A Pillow bitmap with bloom, sent through `textual-image`. Needs `pip install -e ".[hologram-image]"` (Python 3.12+). |
+| `image` (high fidelity, optional) | Chosen with `/hologram image` on a terminal that reports Sixel or Kitty graphics | A Pillow bitmap with bloom, sent through `textual-image`. Needs `pip install -e ".[hologram-image]"`. |
 
 `auto` picks `braille` or `ascii`. It never picks `image` by itself, because encoding a bitmap every frame costs far more than text (about 15 ms to draw plus 40–60 ms to Sixel-encode per frame here), so image mode is capped at 12 fps and usually settles around 5–8. Terminals only answer graphics queries before the UI takes over, so the probe runs at start-up and only when image mode is saved or `AGENT_HOLOGRAM=image` is set. Choosing `image` mid-session saves the choice and explains that a restart is needed. If the probe finds no support, or the image renderer fails at run time, the hologram falls back to text with a notice; graphics problems never stop the chat.
 
