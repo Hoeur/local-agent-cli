@@ -26,3 +26,31 @@ jobs:
         run: python -m pip install -e ".${{ matrix.extra }}"
       - name: Test
         run: python -m unittest discover -s tests -v
+
+  wheel-workflow:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build the wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel --outdir dist
+      - name: Install the wheel into a clean environment
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/clean"
+          py="$RUNNER_TEMP/clean/bin/python"
+          [ -x "$py" ] || py="$RUNNER_TEMP/clean/Scripts/python.exe"
+          "$py" -m pip install "$(ls dist/*.whl)[tui]"
+          echo "CLEAN_PY=$py" >> "$GITHUB_ENV"
+      - name: Run the coding workflow against the installed wheel
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: '"$CLEAN_PY" -I "$GITHUB_WORKSPACE/scripts/workflow_check.py"'
