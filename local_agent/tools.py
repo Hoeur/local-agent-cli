@@ -576,15 +576,30 @@ class PublicWebHandler(HTTPHandler, HTTPSHandler):
         return super().do_open(pinned_connection, request, **kwargs)
 
 
-def fetch(url, allow_private=False, limit=2_000_000, timeout=20, *, user_agent=USER_AGENT):
-    """GET a URL, following up to five redirects and checking each hop. Returns (url, type, bytes)."""
+class HTTPStatusError(ValueError):
+    """The site answered with an error status. code holds it, for callers that explain it."""
+
+    def __init__(self, code):
+        super().__init__(f"The site returned HTTP {code}.")
+        self.code = code
+
+
+def fetch(url, allow_private=False, limit=2_000_000, timeout=20, *, user_agent=USER_AGENT, headers=None,
+          secret_headers=()):
+    """GET a URL, following up to five redirects and checking each hop. Returns (url, type, bytes).
+    secret_headers (an API key, say) are sent only to the first URL's origin, never after a redirect
+    to another one."""
     handlers = () if allow_private else (ProxyHandler({}), PublicWebHandler())
     opener = build_opener(NoRedirect(), *handlers)
+    headers = {"User-Agent": user_agent, "Accept": "text/html,text/plain,*/*;q=0.5", **(headers or {})}
+    origin = urlsplit(url)[:2] + (urlsplit(url).port,)
     for _ in range(6):
         parts = urlsplit(url)
         if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username is not None:
             raise ValueError("Use an http or https URL without credentials.")
-        request = Request(url, headers={"User-Agent": user_agent, "Accept": "text/html,text/plain,*/*;q=0.5"})
+        if (parts.scheme, parts.netloc, parts.port) != origin:
+            headers = {key: value for key, value in headers.items() if key not in secret_headers}
+        request = Request(url, headers=headers)
         try:
             with opener.open(request, timeout=timeout) as response:
                 body = response.read(limit + 1)
@@ -597,7 +612,7 @@ def fetch(url, allow_private=False, limit=2_000_000, timeout=20, *, user_agent=U
             if location:
                 url = urljoin(url, location)
                 continue
-            raise ValueError(f"The site returned HTTP {error.code}.") from None
+            raise HTTPStatusError(error.code) from None
         except (URLError, OSError, HTTPException) as error:
             raise ValueError(f"Could not fetch the page: {getattr(error, 'reason', error)}") from None
     else:
@@ -701,13 +716,23 @@ def wikipedia_search(query, limit):
         raise ValueError("Wikipedia search returned an unexpected response.") from error
 
 
-def web_search(query, limit=6, search_url=None, allow_private=False):
+def web_search(query, limit=6, search_url=None, allow_private=False, provider="duckduckgo"):
+    """Search with the chosen provider (see search.py). Every result names its provider."""
+    from . import search
+
+    if search.check_provider(provider) == "brave":
+        return search.brave_search(query, limit, allow_private)
+    result = duckduckgo_search(query, limit, search_url, allow_private)
+    return {"provider": result.pop("provider", None) or search.label(provider, search_url), **result}
+
+
+def duckduckgo_search(query, limit=6, search_url=None, allow_private=False):
     endpoint = search_url or os.environ.get("AGENT_SEARCH_URL") or SEARCH_URL
     query_string = urlencode({"q": query})
     separator = "&" if "?" in endpoint else "?"
     _, _, body = fetch(endpoint + separator + query_string, allow_private)
     if endpoint == SEARCH_URL and 'id="challenge-form"' in body:
-        return {"results": wikipedia_search(query, limit),
+        return {"provider": "English Wikipedia (DuckDuckGo fallback)", "results": wikipedia_search(query, limit),
                 "note": "DuckDuckGo blocked automated search. Results are limited to English Wikipedia."}
     parser = SearchResults()
     parser.feed(body)

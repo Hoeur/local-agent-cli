@@ -27,7 +27,7 @@ from textual.theme import Theme
 from textual.widgets import Button, Collapsible, DirectoryTree, Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from .. import providers
+from .. import providers, search
 from .. import tools as toolkit
 from ..agent import MAX_TOOL_ROUNDS, TOOLS, Agent, TurnCancelled, tool_names
 from ..attachments import message_text
@@ -792,7 +792,8 @@ class AgentApp(App):
             setattr(self, name, value)
             self.refresh_tools()
             label = {"write": "File changes", "shell": "Shell commands", "web": "Web access"}[name]
-            detail = ("You approve each one." if name != "web" else "Search and read public pages.") if value else ""
+            detail = ("You approve each one." if name != "web" else
+                      f"Search with {self.search_label()} and read public pages.") if value else ""
             self.notify(detail or "Turned off.", title=f"{label} {'on' if value else 'off'}", timeout=3)
         elif name == "learn":
             if self.busy:
@@ -906,6 +907,12 @@ class AgentApp(App):
         else:
             self.call_from_thread(self.notify, f"Opened a sandboxed preview: {clean(path)}",
                                   title="Artifact", timeout=3)
+
+    def search_label(self):
+        try:
+            return search.label(search.configured(self.data_dir))
+        except ValueError as error:
+            return clean(str(error))
 
     # ── Providers ─────────────────────────────────────────────────────────────────────────
 
@@ -1097,7 +1104,8 @@ class AgentApp(App):
             agent = Agent(self.provider, self.state, self.workspace, self.config["context_chars"],
                           (lambda changes: True) if self.auto_approve else approve, on_event,
                           confirm=confirm, write=self.write, shell=self.shell, web=self.web,
-                          max_rounds=self.max_rounds, image_provider=providers.make_image_provider(self.config))
+                          max_rounds=self.max_rounds, image_provider=providers.make_image_provider(self.config),
+                          search=search.configured(self.data_dir))
             content = agent.turn(session, prompt, learn, attachments=attachments)
         except Exception as caught:  # Shown in the UI; the agent has already discarded the turn.
             error = caught

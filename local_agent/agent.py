@@ -39,7 +39,7 @@ class Agent:
     def __init__(self, provider, state, workspace: Path | None = None,
                  context_chars: int = DEFAULT_CONTEXT_CHARS, approve=None, on_event=None, *,
                  confirm=None, write=False, shell=False, web=False, max_rounds=MAX_TOOL_ROUNDS,
-                 allow_private_web=False, image_provider=None):
+                 allow_private_web=False, image_provider=None, search="duckduckgo"):
         self.provider = provider
         self.image_provider = image_provider
         # on_event(kind, data) lets a user interface follow a turn without changing it:
@@ -64,6 +64,7 @@ class Agent:
         self.write, self.shell, self.web = write, shell, web
         self.max_rounds = max_rounds
         self.allow_private_web = allow_private_web
+        self.search = search  # The web search provider: see search.py.
 
     def budget_error(self, subject):
         return (
@@ -210,7 +211,8 @@ class Agent:
             "write_file": self.write_file,
             "patch": self.patch,
             "terminal": self.terminal,
-            "web_search": lambda query: toolkit.web_search(query, allow_private=self.allow_private_web),
+            "web_search": lambda query: toolkit.web_search(query, allow_private=self.allow_private_web,
+                                                          provider=self.search),
             "web_extract": lambda url: toolkit.web_extract(url, self.output_chars, self.allow_private_web),
         }
         names = self.tool_names(learn)

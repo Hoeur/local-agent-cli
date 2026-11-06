@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .agent import MAX_TOOL_ROUNDS, Agent
 from . import providers
+from . import search as web_search_providers
 from .config import DEFAULT_CONTEXT_CHARS, load_config, parse_context_chars, read_settings, save_config, set_active
 from .file_commands import artifact_list, artifact_text
 from .state import State
@@ -179,6 +180,24 @@ def use_profile(data_dir, name, model=None):
     return 0
 
 
+def web_search_command(data_dir, name=None):
+    if name:
+        web_search_providers.save(data_dir, name)
+    current = web_search_providers.configured(data_dir)
+    print(("Web search now uses " if name else "Web search uses ") + web_search_providers.PROVIDERS[current] + ".")
+    if os.environ.get("AGENT_SEARCH_PROVIDER", "").strip():
+        print("AGENT_SEARCH_PROVIDER is set and overrides the saved choice.")
+    if current == "brave":
+        key, source = web_search_providers.brave_key()
+        print(f"API key: {providers.mask(key)} from {source}." if key else
+              f"No API key yet. Set {web_search_providers.BRAVE_KEY_ENV}, or run: python -m local_agent key set "
+              f"{web_search_providers.BRAVE_KEY_NAME}")
+    elif os.environ.get("AGENT_SEARCH_URL"):
+        print(f"AGENT_SEARCH_URL points DuckDuckGo-style search at {printable(os.environ['AGENT_SEARCH_URL'])}.")
+    print("Web tools run only with --web, --all or /web on. Choices: " + ", ".join(web_search_providers.PROVIDERS) + ".")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m local_agent", description="A local tool-using agent.")
     parser.add_argument("--data-dir", type=Path, default=Path(".agent"), help="SQLite state directory")
@@ -207,6 +226,9 @@ def main(argv=None):
     use.add_argument("name")
     use.add_argument("--model", help="Also change that profile's model")
     commands.add_parser("models", help="List the models the active profile's endpoint offers")
+    web_search = commands.add_parser("web-search", help="Show or choose the web search provider",
+                                     description="Providers: " + ", ".join(web_search_providers.PROVIDERS) + ".")
+    web_search.add_argument("provider", nargs="?", help="duckduckgo (default, no key) or brave (needs a key)")
     key = commands.add_parser("key", help="Save or remove an API key (kept outside the project folder)")
     key_actions = key.add_subparsers(dest="key_action", required=True)
     key_set = key_actions.add_parser("set", help="Save a key; you'll be asked to paste it")
@@ -266,6 +288,8 @@ def main(argv=None):
             return list_providers(args.data_dir)
         if args.command == "use":
             return use_profile(args.data_dir, args.name, args.model)
+        if args.command == "web-search":
+            return web_search_command(args.data_dir, args.provider)
         if args.command in {"chat", "doctor", "models"}:
             config = load_config(args.data_dir, args.profile)
             provider = providers.make_provider(config)
@@ -357,7 +381,8 @@ def main(argv=None):
         options = {"write": args.write, "shell": args.shell, "web": args.web, "max_rounds": args.max_rounds}
         state = State(args.data_dir)
         agent = Agent(provider, state, args.workspace, config["context_chars"], approve,
-                      confirm=confirm, image_provider=providers.make_image_provider(config), **options)
+                      confirm=confirm, image_provider=providers.make_image_provider(config),
+                      search=web_search_providers.configured(args.data_dir), **options)
         if args.prompt is not None:
             provider.streaming = False
             print(agent.turn(args.session, args.prompt, args.learn, attachments=args.attach))

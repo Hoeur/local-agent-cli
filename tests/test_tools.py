@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from local_agent import tools
+from local_agent import providers, search, tools
 from local_agent.__main__ import auto_confirm, main
 from local_agent.agent import Agent, TurnCancelled, strip_reasoning
 from local_agent.provider import ChatProvider
@@ -443,6 +443,8 @@ class Page(BaseHTTPRequestHandler):
 
     def do_GET(self):
         Page.last_host = self.headers.get("Host")
+        Page.last_headers = {key.lower(): value for key, value in self.headers.items()}
+        Page.last_path = self.path
         status, kind, body, headers = Page.pages.get(self.path.split("?")[0], (404, "text/plain", "missing", {}))
         if self.path.startswith("/search"):
             Page.last_query = self.path
@@ -551,6 +553,110 @@ class WebTests(Base):
             {"title": "B", "url": "https://example.org/b", "snippet": "About B."},
         ])
         self.assertIn("q=local+agent", Page.last_query)
+
+
+class SearchProviderTests(WebTests):
+    """The opt-in Brave Search provider, against a local fixture of its documented JSON API."""
+
+    def setUp(self):
+        super().setUp()
+        self.keys = self.root / "keys.json"
+        self.env = mock.patch.dict(os.environ, {"AGENT_KEYS_FILE": str(self.keys)})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        for name in ("BRAVE_SEARCH_API_KEY", "AGENT_SEARCH_PROVIDER", "AGENT_SEARCH_URL"):
+            os.environ.pop(name, None)
+        url = mock.patch.object(search, "BRAVE_URL", self.base + "/res/v1/web/search")
+        url.start()
+        self.addCleanup(url.stop)
+
+    def brave_page(self, status=200, body=None):
+        body = body if body is not None else json.dumps({"web": {"results": [
+            {"title": "Local <strong>Agent</strong>", "url": "https://example.com/agent",
+             "description": "A CLI &amp; <strong>terminal</strong> agent."},
+            {"title": "Not a page", "url": "javascript:alert(1)", "description": ""},
+        ]}})
+        Page.pages = {"/res/v1/web/search": (status, "application/json", body, {})}
+
+    def test_default_and_custom_search_stay_as_they_were(self):
+        self.assertEqual(search.configured(self.root / "state"), "duckduckgo")
+        Page.pages = {"/search": (200, "text/html", '<a class="result__a" href="https://example.org/b">B</a>', {})}
+        result = tools.web_search("x", search_url=self.base + "/search", allow_private=True)
+        self.assertEqual(result["provider"], f"custom search (127.0.0.1:{self.server.server_address[1]})")
+        self.assertEqual(result["results"][0]["url"], "https://example.org/b")
+
+    def test_brave_search_with_a_key_from_outside_the_project(self):
+        state = self.root / "state"
+        self.assertEqual(self.run_cli(state, "web-search", "brave")[0], 0)
+        self.assertEqual(search.configured(state), "brave")
+        self.assertNotIn("key", (state / "config.json").read_text())
+        self.brave_page()
+        with self.assertRaisesRegex(ValueError, "Brave Search needs an API key.*key set brave-search"):
+            tools.web_search("local agent", allow_private=True, provider="brave")
+        providers.set_key("brave-search", "BSA-test-key-1234")
+        self.assertNotIn("BSA-test", (state / "config.json").read_text())
+        self.assertIn("…1234 from key store", self.run_cli(state, "web-search")[1])
+        result = tools.web_search("local agent", allow_private=True, provider="brave")
+        self.assertEqual(result["provider"], "Brave Search")
+        self.assertEqual(result["results"], [{"title": "Local Agent", "url": "https://example.com/agent",
+                                              "snippet": "A CLI & terminal agent."}])
+        self.assertEqual(Page.last_headers.get("x-subscription-token"), "BSA-test-key-1234")
+        self.assertIn("q=local+agent", Page.last_path)
+        os.environ["BRAVE_SEARCH_API_KEY"] = "BSA-from-env-5678"  # The variable wins over the store.
+        tools.web_search("again", allow_private=True, provider="brave")
+        self.assertEqual(Page.last_headers.get("x-subscription-token"), "BSA-from-env-5678")
+
+    def test_brave_failures_name_the_provider_and_the_fix(self):
+        os.environ["BRAVE_SEARCH_API_KEY"] = "BSA-test-key-1234"
+        for status, message in ((401, "rejected the API key"), (429, "rate limit"), (500, "failed with HTTP 500")):
+            self.brave_page(status, "{}")
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, "^Brave Search " + message):
+                tools.web_search("x", allow_private=True, provider="brave")
+        self.brave_page(200, "<html>not json</html>")
+        with self.assertRaisesRegex(ValueError, "Brave Search returned an unexpected response"):
+            tools.web_search("x", allow_private=True, provider="brave")
+        self.brave_page(200, json.dumps({"web": {"results": []}}))
+        self.assertIn("no results", tools.web_search("x", allow_private=True, provider="brave")["note"])
+        with mock.patch.object(search, "BRAVE_URL", "http://127.0.0.1:9/res/v1/web/search"):
+            with self.assertRaisesRegex(ValueError, "^Brave Search could not be reached"):
+                tools.web_search("x", allow_private=True, provider="brave")
+            with self.assertRaisesRegex(ValueError, "HTTPS"):
+                tools.web_search("x", provider="brave")  # Never send the key in clear text.
+        with self.assertRaisesRegex(ValueError, "Unknown search provider"):
+            tools.web_search("x", provider="bing")
+
+    def test_brave_keeps_the_private_network_and_redirect_protections(self):
+        os.environ["BRAVE_SEARCH_API_KEY"] = "BSA-test-key-1234"
+        with mock.patch.object(search, "BRAVE_URL", "https://127.0.0.1/res/v1/web/search"), \
+                self.assertRaisesRegex(ValueError, "Private, local and reserved"):
+            tools.web_search("x", provider="brave")
+        # A redirect to another origin never carries the key along.
+        other = ThreadingHTTPServer(("127.0.0.1", 0), Page)
+        threading.Thread(target=other.serve_forever, daemon=True).start()
+        self.addCleanup(other.server_close)
+        self.addCleanup(other.shutdown)
+        elsewhere = f"http://localhost:{other.server_address[1]}/res/v1/web/landing"
+        Page.pages = {"/res/v1/web/search": (302, "text/plain", "", {"Location": elsewhere}),
+                      "/res/v1/web/landing": (200, "application/json", json.dumps({"web": {"results": []}}), {})}
+        tools.web_search("x", allow_private=True, provider="brave")
+        self.assertNotIn("x-subscription-token", Page.last_headers)
+        self.assertIn("user-agent", Page.last_headers)
+
+    def test_agent_uses_the_configured_provider(self):
+        os.environ["BRAVE_SEARCH_API_KEY"] = "BSA-test-key-1234"
+        self.brave_page()
+        provider = Scripted(call("web_search", query="local agent"), text("Found it."))
+        Agent(provider, self.state, web=True, allow_private_web=True, search="brave").turn("s", "Search")
+        self.assertEqual(tool_results(provider)[0]["provider"], "Brave Search")
+        provider = Scripted(call("web_search", query="local agent"), text("Found it."))
+        Agent(provider, self.state, search="brave").turn("t", "Search")  # Web stays opt-in.
+        self.assertNotIn("web_search", [tool["function"]["name"] for tool in provider.requests[0][1]])
+
+    def run_cli(self, data_dir, *args):
+        output = io.StringIO()
+        with redirect_stdout(output), mock.patch("sys.stderr", io.StringIO()) as errors:
+            code = main(["--data-dir", str(data_dir), *args])
+        return code, output.getvalue() + errors.getvalue()
 
 
 class CommandLineTests(Base):

@@ -59,7 +59,7 @@ Tools are organized into groups. Only the groups you enable are sent to the mode
 | workspace | `--workspace DIR` | `list_files`, `read_file`, `search_files` | List folders, read files with line numbers and paging, search file contents with a regex or names with a glob. Read-only. |
 | write | `--write` | `write_file`, `patch` | Create or replace a file, or replace one exact, unique piece of text in a file. You see the diff and approve each change before it's made. |
 | shell | `--shell` | `terminal` | Run a command in the workspace (`cmd.exe` on Windows, `/bin/sh` elsewhere) with no input, a timeout (60 s by default, up to 600 s) and capped output. You approve each command. |
-| web | `--web` | `web_search`, `web_extract` | Search DuckDuckGo and read pages as plain text. If DuckDuckGo challenges the default automated request, the result is labeled and limited to English Wikipedia. Set `AGENT_SEARCH_URL` to use your own DuckDuckGo-compatible HTML search endpoint. |
+| web | `--web` | `web_search`, `web_extract` | Search DuckDuckGo and read pages as plain text. If DuckDuckGo challenges the default automated request, the result is labeled and limited to English Wikipedia. Set `AGENT_SEARCH_URL` to use your own DuckDuckGo-compatible HTML search endpoint, or opt into the Brave Search API (see [Web search providers](#web-search-providers)). |
 
 `--all` is shorthand for `--learn --write --shell --web`. `--write` and `--shell` need `--workspace`. In the full-screen UI, `/write`, `/shell`, `/web` and `/learn` switch the groups on and off between turns.
 
@@ -137,6 +137,18 @@ local-agent setup --provider custom --base-url https://chat.example/v1 --model C
 ```
 
 The endpoint must implement `POST /images/generations` and return an inline base64 image in `data[0].b64_json` (up to 10 MB). Set `AGENT_IMAGE_API_KEY` for a separate image endpoint. With no image URL, the agent uses the chat base URL, and it only reuses the chat key when both URLs match. `AGENT_IMAGE_MODEL` and `AGENT_IMAGE_BASE_URL` override saved settings.
+
+## Web search providers
+
+Web tools stay off until you pass `--web` (or `--all`) or type `/web on`. Searches use DuckDuckGo by default, with no key; `AGENT_SEARCH_URL` still points that at your own DuckDuckGo-compatible HTML page. For steadier results you can switch to the [Brave Search API](https://api-dashboard.search.brave.com/app/documentation/web-search/get-started), a general web search endpoint that needs an API key:
+
+```powershell
+local-agent web-search brave
+local-agent key set brave-search
+local-agent web-search
+```
+
+The provider choice is saved in this folder's `.agent/config.json`. The key is not: it comes from the `BRAVE_SEARCH_API_KEY` variable, or from the same private key store as model keys (`%APPDATA%\local-agent\keys.json` on Windows). `local-agent web-search duckduckgo` switches back, and `AGENT_SEARCH_PROVIDER` picks a provider for one run. Every search result names the provider it came from, and failures say which provider failed and why: a missing or rejected key, a rate limit or quota, or no connection. The key is sent only to Brave over HTTPS, never along a redirect to another site, and Brave's results are read through the same checks as every other page, so private and local addresses stay blocked.
 
 ## Models and settings
 
