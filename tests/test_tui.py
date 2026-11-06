@@ -138,14 +138,15 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
     async def test_attachment_queue_survives_failure_and_clears_after_commit(self):
         notes = self.root / "some notes.txt"
         notes.write_text("Test attachment content", encoding="utf-8")
+        resolved_notes = notes.resolve()
         provider = StreamingFake(RuntimeError("Test failure"), text("Received"))
         app = self.make(provider)
         async with app.run_test(size=(120, 40)) as pilot:
             await self.send(pilot, app, f'/attach "{notes}"')
-            self.assertEqual(app.file_commands.pending, [notes])
+            self.assertEqual(app.file_commands.pending, [resolved_notes])
             await self.send(pilot, app, "Read the notes")
             await self.wait_idle(pilot, app)
-            self.assertEqual(app.file_commands.pending, [notes])
+            self.assertEqual(app.file_commands.pending, [resolved_notes])
             await self.send(pilot, app, "Try again")
             await self.wait_idle(pilot, app)
             self.assertFalse(app.file_commands.pending)
