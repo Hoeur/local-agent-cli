@@ -21,13 +21,15 @@ import re
 import signal
 import socket
 import subprocess
+import tempfile
 import time
+from http.client import HTTPException
 from html.parser import HTMLParser
 from itertools import islice
 from pathlib import Path, PureWindowsPath
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPHandler, HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────────────────
@@ -307,7 +309,7 @@ class Workspace:
         target = self.resolve_new(path)
         before = self.read_text(target) if target.exists() else None
         content, stripped = strip_line_numbers(content)
-        plan = {"target": target, "content": content, "existed": before is not None,
+        plan = {"target": target, "content": content, "before": before, "existed": before is not None,
                 "diff": diff(before or "", content, self.label(target), new_file=before is None)}
         if stripped:
             plan["note"] = STRIPPED_NOTE
@@ -332,19 +334,30 @@ class Workspace:
         if count > 1:
             raise ValueError(f"old_text appears {count} times. Include more surrounding lines so it is unique.")
         after = before.replace(old, new, 1)
-        plan = {"target": target, "content": after, "existed": True, "diff": diff(before, after, self.label(target))}
+        plan = {"target": target, "content": after, "before": before, "existed": True,
+                "diff": diff(before, after, self.label(target))}
         if stripped:
             plan["note"] = STRIPPED_NOTE
         return plan
 
     def apply(self, plan):
-        target = plan["target"]
+        path = self.label(plan["target"])
+        target = self.resolve_new(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.agent-tmp")
-        with temporary.open("w", encoding="utf-8", newline="") as stream:
-            stream.write(plan["content"])
-        os.replace(temporary, target)
-        result = {"written": self.label(target), "created": not plan["existed"],
+        stream = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=target.parent,
+                                             prefix=".agent-", delete=False)
+        temporary = Path(stream.name)
+        try:
+            with stream:
+                stream.write(plan["content"])
+            target = self.resolve_new(path)
+            current = self.read_text(target) if target.exists() else None
+            if current != plan["before"]:
+                raise ValueError("The file changed after the diff was prepared. Read it and request approval again.")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        result = {"written": path, "created": not plan["existed"],
                   "characters": len(plan["content"])}
         if plan.get("note"):
             result["note"] = plan["note"]
@@ -490,6 +503,10 @@ def run_command(command, cwd, timeout=60, output_chars=2400, poll=None):
 # ── Web ──────────────────────────────────────────────────────────────────────────────────
 
 USER_AGENT = "Mozilla/5.0 (compatible; local-agent/0.3)"
+NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
+IPV4_PROTOCOL_ASSIGNMENTS = ipaddress.IPv4Network("192.0.0.0/24")
+PUBLIC_IPV4_ASSIGNMENTS = {ipaddress.IPv4Address("192.0.0.9"), ipaddress.IPv4Address("192.0.0.10")}
+IPV6_DOCUMENTATION = ipaddress.IPv6Network("3fff::/20")
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -497,27 +514,67 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def check_url(url, allow_private=False):
-    parts = urlsplit(url)
-    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
-        raise ValueError("Use an http or https URL without credentials.")
-    if not allow_private:
+def is_public_address(address):
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.sixtofour is not None or ip in IPV6_DOCUMENTATION:
+            return False
+        if ip in NAT64_PREFIX:
+            ip = ipaddress.IPv4Address(ip.packed[-4:])
+        else:
+            ip = ip.ipv4_mapped or ip
+    # Older supported Python versions classify some IANA protocol addresses as public.
+    if ip in IPV4_PROTOCOL_ASSIGNMENTS:
+        return ip in PUBLIC_IPV4_ASSIGNMENTS
+    return ip.is_global and not (ip.is_reserved or ip.is_multicast or getattr(ip, "is_site_local", False))
+
+
+def connect_public(destination, timeout, source_address=None):
+    host, port = destination
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        raise ValueError(f"Could not resolve {host}.") from None
+    if any(not is_public_address(address[0]) for _, _, _, _, address in addresses):
+        raise ValueError("Private, local and reserved network addresses are not fetched.")
+    # Connect directly to the checked socket address. A proxy or another DNS lookup could pick a different peer.
+    failure = OSError("No usable address was found.")
+    for family, kind, protocol, _, address in addresses:
         try:
-            addresses = {info[4][0] for info in socket.getaddrinfo(parts.hostname, parts.port or 443)}
-        except (socket.gaierror, UnicodeError):
-            raise ValueError(f"Could not resolve {parts.hostname}.") from None
-        for address in addresses:
-            ip = ipaddress.ip_address(address.split("%")[0])
-            if not ip.is_global:
-                raise ValueError("Private, local and reserved network addresses are not fetched.")
-    return url
+            peer = socket.socket(family, kind, protocol)
+            try:
+                peer.settimeout(timeout)
+                if source_address:
+                    peer.bind(source_address)
+                peer.connect(address)
+            except BaseException:
+                peer.close()
+                raise
+            return peer
+        except OSError as error:
+            failure = error
+    raise failure
+
+
+class PublicWebHandler(HTTPHandler, HTTPSHandler):
+    def do_open(self, factory, request, **kwargs):
+        def pinned_connection(host, **options):
+            connection = factory(host, **options)
+            # Keep the original HTTP host and TLS verification, and replace only socket creation.
+            connection._create_connection = connect_public
+            return connection
+
+        return super().do_open(pinned_connection, request, **kwargs)
 
 
 def fetch(url, allow_private=False, limit=2_000_000, timeout=20):
     """GET a URL, following up to five redirects and checking each hop. Returns (url, type, bytes)."""
-    opener = build_opener(NoRedirect())
+    handlers = () if allow_private else (ProxyHandler({}), PublicWebHandler())
+    opener = build_opener(NoRedirect(), *handlers)
     for _ in range(6):
-        check_url(url, allow_private)
+        parts = urlsplit(url)
+        if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username is not None:
+            raise ValueError("Use an http or https URL without credentials.")
         request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,text/plain,*/*;q=0.5"})
         try:
             with opener.open(request, timeout=timeout) as response:
@@ -532,7 +589,7 @@ def fetch(url, allow_private=False, limit=2_000_000, timeout=20):
                 url = urljoin(url, location)
                 continue
             raise ValueError(f"The site returned HTTP {error.code}.") from None
-        except (URLError, TimeoutError, OSError) as error:
+        except (URLError, OSError, HTTPException) as error:
             raise ValueError(f"Could not fetch the page: {getattr(error, 'reason', error)}") from None
     else:
         raise ValueError("Too many redirects.")

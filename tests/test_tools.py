@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -154,6 +155,29 @@ class FileToolTests(Base):
         self.agent(provider, write=True).turn("s", "Edit")
         self.assertEqual((self.workspace / "x.txt").read_text(encoding="utf-8"), "hello there\n")
         self.assertEqual(self.asked[0]["summary"], "Edit x.txt")
+
+    def test_patch_refuses_edits_made_during_approval(self):
+        target = self.workspace / "x.txt"
+        target.write_text("original", encoding="utf-8")
+
+        def approve(action):
+            target.write_text("concurrent edit", encoding="utf-8")
+            return True
+
+        provider = Scripted(call("patch", path="x.txt", old_text="original", new_text="approved"), text("Stopped."))
+        self.agent(provider, write=True, confirm=approve).turn("s", "Edit")
+        self.assertIn("request approval again", tool_results(provider)[0]["error"])
+        self.assertEqual(target.read_text(encoding="utf-8"), "concurrent edit")
+        self.assertEqual(list(self.workspace.iterdir()), [target])
+
+    def test_write_refuses_a_file_created_after_planning(self):
+        files = tools.Workspace(self.workspace)
+        plan = files.plan_write("x.txt", "approved")
+        target = self.workspace / "x.txt"
+        target.write_text("created elsewhere", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "request approval again"):
+            files.apply(plan)
+        self.assertEqual(target.read_text(encoding="utf-8"), "created elsewhere")
 
     def test_write_and_shell_need_a_workspace(self):
         with self.assertRaisesRegex(ValueError, "workspace"):
@@ -329,6 +353,7 @@ class Page(BaseHTTPRequestHandler):
     pages = {}
 
     def do_GET(self):
+        Page.last_host = self.headers.get("Host")
         status, kind, body, headers = Page.pages.get(self.path.split("?")[0], (404, "text/plain", "missing", {}))
         if self.path.startswith("/search"):
             Page.last_query = self.path
@@ -371,9 +396,59 @@ class WebTests(Base):
 
     def test_private_addresses_are_refused(self):
         for url in (self.base + "/article", "http://localhost/", "http://10.0.0.1/", "file:///etc/passwd",
-                    "http://user:pw@example.com/"):
+                    "http://user:pw@example.com/", "http://@example.com/", "http://[::ffff:127.0.0.1]/",
+                    "http://224.0.0.1/", "http://[fec0::1]/"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 tools.web_extract(url)
+
+    def test_nonpublic_answers_are_rejected_before_any_connection(self):
+        public = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 80))
+        for address in ("::127.0.0.1", "::ffff:127.0.0.1", "64:ff9b:1::7f00:1",
+                        "64:ff9b::7f00:1", "2002:7f00:1::1", "3fff::1", "::ffff:192.0.0.8"):
+            with self.subTest(address=address):
+                private = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (address, 80, 0, 0))
+                with mock.patch("socket.getaddrinfo", return_value=[public, private]), \
+                     mock.patch("socket.socket") as connect:
+                    with self.assertRaisesRegex(ValueError, "Private, local and reserved"):
+                        tools.web_extract("http://fixture.test/")
+                    connect.assert_not_called()
+        self.assertTrue(tools.is_public_address("64:ff9b::808:808"))
+
+    def test_fetch_connects_to_the_checked_address_and_checks_redirects(self):
+        Page.pages = {
+            "/article": (200, "text/plain", "Public article", {}),
+            "/redirect": (302, "text/plain", "", {"Location": self.base + "/article"}),
+        }
+        loopback = self.server.server_address
+        public = ("93.184.215.14", loopback[1])
+        port = loopback[1]
+        resolver = socket.getaddrinfo
+        connect = socket.socket.connect
+        peers = []
+        lookups = []
+
+        def connect_fixture(peer, address):
+            peers.append(address)
+            self.assertEqual(address, public)
+            return connect(peer, loopback)
+
+        def resolve_fixture(host, port, *args, **kwargs):
+            lookups.append(host)
+            address = public[0] if host == "rebind.test" and len(lookups) == 1 else loopback[0]
+            return resolver(address, port, *args, **kwargs)
+
+        with mock.patch.dict(os.environ, {"http_proxy": "http://127.0.0.1:9", "no_proxy": ""}), \
+             mock.patch("socket.getaddrinfo", side_effect=resolve_fixture) as dns, \
+             mock.patch.object(socket.socket, "connect", connect_fixture):
+            result = tools.web_extract(f"http://rebind.test:{port}/article")
+            self.assertEqual(result["text"], "Public article")
+            self.assertEqual(Page.last_host, f"rebind.test:{port}")
+            dns.assert_called_once_with("rebind.test", port, type=socket.SOCK_STREAM)
+            peers.clear()
+            lookups.clear()
+            with self.assertRaisesRegex(ValueError, "Private, local and reserved"):
+                tools.web_extract(f"http://rebind.test:{port}/redirect")
+            self.assertEqual(peers, [public])
 
     def test_search_parses_results(self):
         Page.pages = {"/search": (200, "text/html", """
