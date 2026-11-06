@@ -303,5 +303,47 @@ class ProfileAndKeyTests(unittest.TestCase):
         self.assertIn("key set anthropic", output)
 
 
+    def test_doctor_tells_a_new_ollama_user_what_to_do(self):
+        import socket
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Ollama(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                body = json.dumps({"data": [{"id": "llama3.2:1b"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                body = b'{"error": "model not found"}'
+                self.send_response(404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Ollama)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.run_cli("setup", "--provider", "ollama", "--model", "qwen3:0.6b", "--base-url", f"http://127.0.0.1:{server.server_port}/v1")
+        code, output = self.run_cli("doctor")
+        self.assertEqual(code, 1)
+        self.assertIn("ollama pull qwen3:0.6b", output)
+        with socket.socket() as probe:  # A port nothing listens on: Ollama isn't running.
+            probe.bind(("127.0.0.1", 0))
+            closed = probe.getsockname()[1]
+        self.run_cli("setup", "--provider", "ollama", "--model", "qwen3:0.6b", "--base-url", f"http://127.0.0.1:{closed}/v1")
+        code, output = self.run_cli("doctor")
+        self.assertEqual(code, 1)
+        self.assertIn("ollama serve", output)
+
+
 if __name__ == "__main__":
     unittest.main()

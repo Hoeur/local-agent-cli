@@ -4,7 +4,35 @@ A standalone Python CLI agent with persistent conversations, memory, and reusabl
 
 ## Run on Windows
 
-Requires Python 3.11 or later and a model with tool calling: local through Ollama, or a cloud model (Claude, OpenAI/Codex, DeepSeek, Alibaba Qwen and others; see [Models and settings](#models-and-settings)). The local development setup uses Ollama with `qwen3:0.6b`. From this directory, run these commands in Command Prompt or PowerShell.
+Requires Python 3.11 or later and a model with tool calling: local through Ollama, or a cloud model (Claude, OpenAI/Codex, DeepSeek, Alibaba Qwen and others; see [Models and settings](#models-and-settings)). Every command block in this README can be pasted into Command Prompt or PowerShell.
+
+### Install a release
+
+Install [Ollama](https://ollama.com/download) and start it, then download a small model with tool calling:
+
+```powershell
+ollama pull qwen3:0.6b
+```
+
+Install Local Agent with the terminal UI from the [latest release](https://github.com/Hoeur/local-agent-cli/releases/latest):
+
+```powershell
+python -m pip install "local-agent-cli[tui] @ https://github.com/Hoeur/local-agent-cli/releases/download/v0.3.1/local_agent_cli-0.3.1-py3-none-any.whl"
+```
+
+If you downloaded the wheel, install the file with `python -m pip install "local_agent_cli-0.3.1-py3-none-any.whl[tui]"` from the folder that holds it. Then open the project folder you want to work in, save the model setting, check it, and start a session there. Settings, sessions and task lists are kept in that folder's `.agent` directory.
+
+```powershell
+local-agent setup --model qwen3:0.6b
+local-agent doctor
+local-agent chat --session dev --workspace . --all
+```
+
+If Windows can't find `local-agent`, pip installed it into a Scripts folder that isn't on `PATH`; use `python -m local_agent` in its place. `doctor` says what to do when Ollama isn't running or the model isn't downloaded yet.
+
+### Run from source
+
+From this directory:
 
 ```powershell
 python -m pip install -e ".[tui]"
@@ -84,8 +112,8 @@ The system monitor stays at the top of the sidebar and refreshes once per second
 Attach local images or UTF-8 text with repeatable `--attach` options.
 
 ```powershell
-local-agent chat --session reports --attach .\notes.txt 'Summarize these notes and save report.md.'
-local-agent chat --session vision --max-rounds 0 --attach .\photo.png 'Describe the photo.'
+local-agent chat --session reports --attach .\notes.txt "Summarize these notes and save report.md."
+local-agent chat --session vision --max-rounds 0 --attach .\photo.png "Describe the photo."
 ```
 
 Use `/attach PATH`, `/attachments`, and `/detach` in either chat interface. Quote paths with spaces. Files are read at submission and sent to the active model provider. The queue clears when a turn succeeds and stays available after an error or cancellation. PNG, JPEG, WebP, and GIF inputs require a vision-capable model. Use `--max-rounds 0` for models that cannot accept tools alongside an image. The data directory caches image bytes so session history can replay them after the original file moves. Each message supports four attachments, up to 5 MB per file, 10 MB of images, and 12,000 combined text characters. Replayed images share a 10 MB per-request limit.
@@ -105,8 +133,7 @@ Browser previews display HTML, SVG, and images in a sandbox with scripts and ext
 Set an image model on a chat profile to enable `generate_image`.
 
 ```powershell
-local-agent setup --provider custom --base-url https://chat.example/v1 --model CHAT_MODEL `
-    --image-base-url https://images.example/v1 --image-model IMAGE_MODEL
+local-agent setup --provider custom --base-url https://chat.example/v1 --model CHAT_MODEL --image-base-url https://images.example/v1 --image-model IMAGE_MODEL
 ```
 
 The endpoint must implement `POST /images/generations` and return an inline base64 image in `data[0].b64_json` (up to 10 MB). Set `AGENT_IMAGE_API_KEY` for a separate image endpoint. With no image URL, the agent uses the chat base URL, and it only reuses the chat key when both URLs match. `AGENT_IMAGE_MODEL` and `AGENT_IMAGE_BASE_URL` override saved settings.
@@ -127,19 +154,23 @@ The agent can run on a local Ollama model or on a cloud model you pay for by the
 | A reseller or any other endpoint | `custom` | pass `--model` and `--base-url` | `AGENT_API_KEY` |
 
 ```powershell
-python -m local_agent setup --provider deepseek          # saves the profile and makes it active
-python -m local_agent key set deepseek                   # paste the key; it isn't shown or echoed
-python -m local_agent doctor                             # checks the key, endpoint and model
+python -m local_agent setup --provider deepseek
+python -m local_agent key set deepseek
+python -m local_agent doctor
 python -m local_agent chat --workspace . --write
-
-python -m local_agent setup --provider alibaba --model deepseek-v3.2   # DeepSeek served by Alibaba
-python -m local_agent use claude                         # switch profile (creates it from the preset)
-python -m local_agent use ollama --model qwen3:4b        # switch and change that profile's model
-python -m local_agent --profile anthropic chat           # use a profile once without switching
-python -m local_agent providers                          # presets, saved profiles, which keys are set
-python -m local_agent models                             # models the active endpoint offers
-python -m local_agent key list                           # where each key comes from (never the key)
 ```
+
+`setup` saves the profile and makes it active, `key set` asks for the key without echoing it, and `doctor` checks the key, endpoint and model. More profile commands:
+
+| Command | What it does |
+|---|---|
+| `python -m local_agent setup --provider alibaba --model deepseek-v3.2` | DeepSeek served by Alibaba |
+| `python -m local_agent use claude` | Switch profile (creates it from the preset) |
+| `python -m local_agent use ollama --model qwen3:4b` | Switch and change that profile's model |
+| `python -m local_agent --profile anthropic chat` | Use a profile once without switching |
+| `python -m local_agent providers` | Presets, saved profiles, which keys are set |
+| `python -m local_agent models` | Models the active endpoint offers |
+| `python -m local_agent key list` | Where each key comes from (never the key) |
 
 In the terminal UI, `/provider` lists profiles and `/provider <name>` switches; `/model` lists the endpoint's models and `/model <name>` switches model. Both take effect from the next message.
 
@@ -153,23 +184,23 @@ In the terminal UI, `/provider` lists profiles and `/provider <name>` switches; 
 
 ## Commands
 
-Use `/exit` (or `ctrl+q` in the full-screen UI) to leave interactive chat, or supply one prompt on the command line. Reuse `--session` to continue a conversation.
+Use `/exit` (or `ctrl+q` in the full-screen UI) to leave interactive chat, or supply one prompt on the command line. Reuse `--session` to continue a conversation. `memory` lists memories and `remember` saves one yourself; `search` looks through every conversation; `todo` prints a session's task list.
 
 ```powershell
-python -m local_agent chat --session demo --learn 'Remember that I prefer concise replies.'
-python -m local_agent chat --session demo --learn 'Save a skill called release-checklist with these steps. Run tests, review the changelog, and verify package checksums.'
-python -m local_agent chat --session dev --workspace . --write --shell 'Run the tests and fix the first failure.'
-python -m local_agent chat --session research --web 'What changed in the latest Python release?'
-python -m local_agent memory                     # list memories
-python -m local_agent remember editor vscode     # save one yourself
+python -m local_agent chat --session demo --learn "Remember that I prefer concise replies."
+python -m local_agent chat --session demo --learn "Save a skill called release-checklist with these steps. Run tests, review the changelog, and verify package checksums."
+python -m local_agent chat --session dev --workspace . --write --shell "Run the tests and fix the first failure."
+python -m local_agent chat --session research --web "What changed in the latest Python release?"
+python -m local_agent memory
+python -m local_agent remember editor vscode
 python -m local_agent forget editor
 python -m local_agent skills
 python -m local_agent skill release-checklist
 python -m local_agent skill release-checklist --delete
 python -m local_agent sessions
 python -m local_agent history demo
-python -m local_agent search 'concise replies'   # search every conversation
-python -m local_agent todo dev                   # a session's task list
+python -m local_agent search "concise replies"
+python -m local_agent todo dev
 python -m local_agent delete-session demo
 ```
 

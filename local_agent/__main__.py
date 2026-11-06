@@ -72,6 +72,16 @@ def urlsplit_host(url):
     return urlsplit(url).netloc or url
 
 
+def doctor_hint(config, status):
+    """Next steps for a local Ollama setup that isn't ready yet."""
+    if config.get("provider") != "ollama":
+        return ""
+    model = printable(config["model"])
+    if status == "missing":
+        return f"\nDownload the model with: ollama pull {model}"
+    return f"\nStart Ollama (open the Ollama app, or run: ollama serve), then run: ollama pull {model}"
+
+
 def setup_profile(args):
     provider = providers.preset_name(args.provider) if args.provider else None
     if args.provider and provider is None:
@@ -266,7 +276,7 @@ def main(argv=None):
             if args.command == "doctor":
                 status, detail = provider.check()
                 if status != "online":
-                    raise ValueError(detail)
+                    raise ValueError(detail + doctor_hint(config, status))
                 print(f"Connected to {config['profile']} ({urlsplit_host(config['base_url'])}). {detail}")
                 return 0
         if args.command != "chat":
