@@ -253,7 +253,9 @@ local-agent doctor
 python -m unittest discover -s tests -v
 ```
 
-Without the extra, the terminal UI tests are skipped and everything else runs. GitHub Actions runs the suite on Windows and Linux for Python 3.11 to 3.13, with and without the extra (`.github/workflows/tests.yml`).
+Without the extra, the terminal UI tests are skipped and everything else runs. GitHub Actions runs the suite on Windows, Linux and macOS for Python 3.11 to 3.13, with and without the extra (`.github/workflows/tests.yml`). A separate job installs a freshly built wheel and checks the coding workflow on all three systems. These headless checks do not replace testing in a real terminal.
+
+See [Release procedure](docs/RELEASING.md) for tag-triggered publishing, checksums and native terminal checks, and [Stabilization results](docs/STABILIZATION.md) for the latest local verification and remaining acceptance work.
 
 Earlier live verification with Ollama and `qwen3:0.6b` covered these, through interactive chat:
 
