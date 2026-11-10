@@ -47,6 +47,19 @@ COMMANDS = [
     Command("artifacts", "/artifacts", "Show generated artifacts with Preview and Copy path"),
     Command("artifact", "/artifact <id>", "Read a generated artifact", False),
     Command("open", "/open <id>", "Open a generated artifact in a browser preview", False),
+    Command("projects", "/projects", "Open, register, rename or unregister projects (f5)"),
+    Command("project", "/project [name|none]", "Project home (f6), or switch project; none leaves projects"),
+    Command("notes", "/notes [kind|words]", "Browse and search the project's notes (f7)"),
+    Command("note", "/note <id>", "Open one note", False),
+    Command("create", "/create <note|idea|decision|task|overview> [title]", "Write a new project note", False),
+    Command("tasks", "/tasks", "Project tasks: implement, record outcomes, set status"),
+    Command("decisions", "/decisions", "Project decisions"),
+    Command("find", "/find <words>", "Search project notes", False),
+    Command("brainstorm", "/brainstorm [topic]", "Start a brainstorming conversation in the project"),
+    Command("save", "/save [idea|note|decision|task] [title]", "Save the latest reply to the project, after review (f9)"),
+    Command("context", "/context [add|remove|clear] [note]", "Notes sent with this conversation, and why"),
+    Command("implement", "/implement <task>", "Start the implementation conversation for a task", False),
+    Command("outcome", "/outcome [task]", "Record a task's outcome, verification and open issues"),
     Command("exit", "/exit", "Quit"),
 ]
 BY_NAME = {command.name: command for command in COMMANDS}
@@ -82,6 +95,16 @@ class AgentCommands(Provider):
         for name, count in app.state.sessions():
             if name != app.session:
                 yield f"Switch session: {name}", partial(app.run_slash, f"/session {name}"), f"{count} turns"
+        try:
+            projects = app.registry.projects()
+        except ValueError:
+            projects = []
+        for project in projects:
+            if app.project is None or project.id != app.project.id:
+                yield f"Open project: {project.name}", partial(app.run_slash, f"/project {project.id}"), \
+                    str(project.path)
+        if app.project is not None:
+            yield "Leave project: classic sessions", partial(app.run_slash, "/project none"), "conversations outside projects"
         try:
             from ..config import read_settings
 

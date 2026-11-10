@@ -789,11 +789,26 @@ class Composer(TextArea):
     NEWLINE_KEYS = {"shift+enter", "alt+enter", "ctrl+j", "ctrl+enter"}
 
     def __init__(self, **kwargs):
+        self.recall_index = None
+        self.recall_draft = None
         super().__init__(soft_wrap=True, tab_behavior="focus", show_line_numbers=False,
                          highlight_cursor_line=False, **kwargs)
         self.recall = []
         self.recall_index = None
         self.suggesting = False
+
+    def load_text(self, text):
+        # A replacement from a command, restored prompt or session starts fresh history navigation.
+        self.recall_index = self.recall_draft = None
+        super().load_text(text)
+
+    def submit(self):
+        text = self.text.strip()
+        if text:
+            if not self.recall or self.recall[-1] != text:
+                self.recall.append(text)
+            self.recall_index = self.recall_draft = None
+            self.post_message(self.Submitted(text))
 
     async def _on_key(self, event: events.Key):
         key = event.key
@@ -811,31 +826,30 @@ class Composer(TextArea):
         if key == "enter":
             event.stop()
             event.prevent_default()
-            text = self.text.strip()
-            if text:
-                if not self.recall or self.recall[-1] != text:
-                    self.recall.append(text)
-                self.recall_index = None
-                self.post_message(self.Submitted(text))
+            self.submit()
             return
         row, _ = self.cursor_location
         if key == "up" and row == 0 and self.recall:
             event.stop()
             event.prevent_default()
-            self.recall_index = len(self.recall) - 1 if self.recall_index is None else max(0, self.recall_index - 1)
-            self.load_text(self.recall[self.recall_index])
+            draft = (self.text, self.selection) if self.recall_index is None else self.recall_draft
+            index = len(self.recall) - 1 if self.recall_index is None else max(0, self.recall_index - 1)
+            self.load_text(self.recall[index])
+            self.recall_index, self.recall_draft = index, draft
             self.move_cursor(self.document.end)
             return
         if key == "down" and self.recall_index is not None and row == self.document.line_count - 1:
             event.stop()
             event.prevent_default()
-            self.recall_index += 1
-            if self.recall_index >= len(self.recall):
-                self.recall_index = None
-                self.load_text("")
+            index, draft = self.recall_index + 1, self.recall_draft
+            if index >= len(self.recall):
+                self.load_text(draft[0] if draft else "")
+                if draft:
+                    self.selection = draft[1]
             else:
-                self.load_text(self.recall[self.recall_index])
-            self.move_cursor(self.document.end)
+                self.load_text(self.recall[index])
+                self.recall_index, self.recall_draft = index, draft
+                self.move_cursor(self.document.end)
             return
         await super()._on_key(event)
 
@@ -875,6 +889,8 @@ class Sidebar(Vertical):
         yield SystemMonitor(self.root, unicode=self.app.glyphs.orb != "@",
                             color="NO_COLOR" not in self.app.environ, id="system-monitor")
         with VerticalScroll(id="sidebar-scroll"):
+            with Collapsible(title="Project", collapsed=False, id="project-section"):
+                yield Static("", id="project-info")
             with Collapsible(title="Sessions", collapsed=False, id="sessions-section"):
                 yield SidebarList(id="session-list")
             with Collapsible(title="Explorer", collapsed=False, id="explorer-section"):

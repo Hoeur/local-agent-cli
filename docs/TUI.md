@@ -22,8 +22,9 @@ The full-screen UI starts when Textual is installed and both input and output ar
 | Sidebar (`ctrl+b`) | Sessions (enter to switch), a project explorer (enter previews a file), which tools are enabled and which one is running, model details, saved memories and skills. Each section collapses. Width is adjustable from the palette or with `/sidebar 40`. |
 | Conversation | Your messages, then each agent turn: a pulsing thinking line, collapsible reasoning (Qwen `<think>` blocks or a provider `reasoning` field), streamed Markdown with highlighted code, and one row per tool call with a spinner, result status, timing and expandable output. Workspace paths in tool rows are clickable previews. Errors appear as cards with a hint. |
 | Holographic core (`f3`) | A rotating 3D hologram of the agent beside the conversation, with its state, an energy gauge and the renderer underneath. A larger one fills the welcome screen. See [Holographic core](#holographic-core). |
-| Composer | Bordered, multiline, grows to 10 lines. `/` completes commands and their arguments, `@` completes workspace file names. Up and down recall earlier prompts. |
+| Composer | Bordered, multiline, grows to 10 lines. Visible **Send** / **Stop** controls and a changing keyboard hint sit above the input. `/` completes commands and their arguments, `@` completes workspace file names. Up and down recall earlier prompts while preserving your unfinished draft. |
 | Status bar | Agent state and current step, a context-budget gauge for the last request, token counts (exact when the provider reports usage, `~` estimated otherwise), learning on/off, and key hints. |
+| Projects (`f5`, `f6`, `f7`) | The project switcher, the project home (overview, open tasks, recent notes, decisions and conversations, with chat, brainstorm, note and task actions) and the notes browser with search, filters, a preview and a Markdown editor. The sidebar's **Project** section shows the open project, the notes selected for the conversation and the notes sent with the last request; a **context** line above each reply says the same. See [PROJECTS.md](PROJECTS.md). |
 | Overlays | Command palette (`ctrl+p`), approval dialog for memory and skill changes, action dialog for file changes and commands (shows the diff or the command; dangerous commands are marked and start on **Decline**), file preview, help (`f1`). |
 
 ## Keyboard
@@ -31,7 +32,9 @@ The full-screen UI starts when Textual is installed and both input and output ar
 | Key | Action |
 |---|---|
 | `enter` | Send |
+| **Send** / **Stop** | Send the current prompt / cancel the running turn |
 | `shift+enter`, `ctrl+j` | New line (`ctrl+j` works in every terminal) |
+| `up` / `down` | Browse prompt history from the first/last line; down past the newest prompt restores your draft and cursor |
 | `tab` / `enter` | Accept a suggestion · `esc` dismisses it |
 | `ctrl+p` | Command palette |
 | `ctrl+b`, `f2` | Toggle the sidebar |
@@ -45,14 +48,22 @@ The full-screen UI starts when Textual is installed and both input and output ar
 | `alt+←` `alt+→` `alt+↑` `alt+↓` | Rotate and tilt the hologram (also: drag it with the mouse; the wheel zooms) |
 | `ctrl+t` | Next theme |
 | `ctrl+n` | New session |
+| `f5` · `f6` · `f7` | Projects · project home · notes, ideas, decisions and tasks |
+| `f9`, **Save…** | Save the latest reply to the project as an idea, note, decision or task (you review the draft first) |
 | `ctrl+l` | Clear the view (the saved history is untouched) |
 | `ctrl+q`, `/exit`, `ctrl+d` on an empty composer | Quit |
 
 On Windows, copies go straight to the system clipboard as Unicode with Windows line breaks, so they paste intact from Command Prompt, PowerShell and Windows Terminal. Elsewhere, and over SSH, the terminal does the copy (OSC 52), which most terminals support.
 
+### Recovering a failed or cancelled prompt
+
+You can keep typing the next draft while the agent works. **Stop** cancels the turn and returns focus to the composer without clearing that draft. After failure or cancellation, **Restore prompt** puts the original prompt back into an empty composer for editing; it never sends a request automatically. If you already have a draft, the restore action stays disabled until you clear it. Queued attachments remain available after failure or cancellation.
+
+Review completed tool actions before sending again: cancelling a conversation does not undo file changes or shell commands that already ran. Recovery is available for the latest failed/cancelled prompt in the current session until you start another turn, switch sessions, or close the app. **Copy reply** becomes available when there is a completed reply to copy.
+
 ## Commands
 
-`/help`, `/new [name]`, `/session <name>`, `/sessions`, `/history` (the view shows the latest 40 turns; this loads all), `/clear`, `/memory`, `/forget <name>`, `/skills`, `/skill <name>`, `/todo` (this session's task list; `/todo add TEXT`, `/todo edit N TEXT`, `/todo move N TO`, `/todo start N`, `/todo done N`, `/todo undo N` and `/todo remove N` change it, even while a turn runs), `/search <words>` (past conversations), `/learn [on|off]`, `/write [on|off]` and `/shell [on|off]` (need `--workspace`), `/web [on|off]`, `/theme [name]`, `/motion [full|reduced|off]`, `/sidebar [on|off|width]`, `/hologram [...]` (see below), `/expand`, `/doctor`, `/provider [name]` (list or switch model profiles: Claude, OpenAI, DeepSeek, Alibaba...), `/model [name]` (list or switch the model), `/copy` (the latest reply, like `f4`), `/attach <path>`, `/attachments` and `/detach [number|name]` (queued files also show above the composer; click one to remove it), `/artifacts` (the latest generated files, each with **Preview** in a sandboxed browser page and **Copy path**), `/artifact <id>`, `/open <id>`, `/exit`. Every command without an argument is also in the palette, along with session switching, saved provider profiles, themes and motion levels.
+`/help`, `/new [name]`, `/session <name>`, `/sessions`, `/history` (the view shows the latest 40 turns; this loads all), `/clear`, `/memory`, `/forget <name>`, `/skills`, `/skill <name>`, `/todo` (this session's task list; `/todo add TEXT`, `/todo edit N TEXT`, `/todo move N TO`, `/todo start N`, `/todo done N`, `/todo undo N` and `/todo remove N` change it, even while a turn runs), `/search <words>` (past conversations), `/learn [on|off]`, `/write [on|off]` and `/shell [on|off]` (need `--workspace`), `/web [on|off]`, `/theme [name]`, `/motion [full|reduced|off]`, `/sidebar [on|off|width]`, `/hologram [...]` (see below), `/expand`, `/doctor`, `/provider [name]` (list or switch model profiles: Claude, OpenAI, DeepSeek, Alibaba...), `/model [name]` (list or switch the model), `/copy` (the latest reply, like `f4`), `/attach <path>`, `/attachments` and `/detach [number|name]` (queued files also show above the composer; click one to remove it), `/artifacts` (the latest generated files, each with **Preview** in a sandboxed browser page and **Copy path**), `/artifact <id>`, `/open <id>`, `/exit`. Project commands: `/projects`, `/project [name|none]`, `/notes [kind|words]`, `/note <id>`, `/create <kind> [title]`, `/tasks`, `/decisions`, `/find <words>`, `/brainstorm [topic]`, `/save [kind] [title]`, `/context [add|remove|clear] [note]`, `/implement <task>` and `/outcome [task]` ([PROJECTS.md](PROJECTS.md) has their keys). Every command without an argument is also in the palette, along with session switching, project switching, saved provider profiles, themes and motion levels.
 
 ## Holographic core
 
@@ -147,10 +158,13 @@ local_agent/
   agent.py      Agent(on_event=...) reports request/text/reply/tool_start/tool_end/commit/done
   provider.py   complete(..., on_text=...) streams via server-sent events, falls back to one request
   plain.py      line-based chat: spinner on stderr, colors only on a terminal, Ctrl+C cancels a turn
+  projects.py   project registry, Markdown notes, context selection, outcomes (standard library only)
+  project_commands.py  project operations and text views shared by the CLI, plain chat and the UI
   tui/
     app.py      layout, keys, commands, the turn thread and the event bridge
     widgets.py  header, welcome, messages, tool rows, composer, sidebar, status bar
     screens.py  approval, file preview, help
+    project_screens.py  project switcher, project home, notes browser, note editor, outcome and small dialogs
     commands.py slash commands and the palette provider
     hologram.py the holographic core engine: state director, 3D scene, Braille/ASCII/bitmap rasterizers,
                 frame-rate governor, renderer detection (pure Python, no Textual imports)
@@ -166,6 +180,7 @@ The agent knows nothing about the UI. The hooks are optional keyword arguments, 
 2. Events are posted to the UI thread as messages, preserving their order. Streamed text is coalesced into batches, so however fast a model streams, the UI processes at most one pending batch and keystrokes never wait behind hundreds of tiny updates.
 3. Approval requests travel through the same ordered queue and block the turn thread until you answer.
 4. Cancelling marks the turn's token; the callback raises `TurnCancelled` at the next event, which unwinds the turn before `commit_turn` runs.
+5. Each token also records the project it started in, and the turn thread receives that project's state, workspace and switches when it starts. Switching projects asks before cancelling a running turn, and events from a turn of another project are dropped, so a late reply can never land in the newly opened project.
 
 Streaming uses the Chat Completions `stream: true` format, including incremental tool-call deltas and optional usage. If an endpoint rejects it (HTTP 400, 404, 415, 422 or 501), the provider retries the same request without streaming and stops asking for the rest of the session. The reconstructed reply is validated by the same parser as a normal response.
 
@@ -201,7 +216,8 @@ While streaming a long, code-heavy reply at about 300 tokens per second, keystro
 - The side-panel hologram shrinks, then hides, so the conversation keeps at least 58 columns.
 - The Linux virtual console (`TERM=linux`) and `TERM=dumb` get the ASCII hologram.
 - On a classic Windows console, colors are downgraded and glyphs switch to ASCII.
+- Project screens rearrange below 100 columns: the home stacks its columns, the notes view drops the preview, key hints wrap onto up to three lines and dialogs stack their choices.
 
 ## Testing
 
-`python -m unittest discover -s tests -v` runs everything. With Textual installed, `tests/test_tui.py` drives the app headlessly: streaming and saving a turn, tool rows, cancelling mid-turn with input still live, approving and declining changes, error cards, non-streaming providers, slash commands, autocomplete and multiline input, file mentions and previews (including a path outside the workspace), terminal resizing, and resuming saved history. `tests/test_hologram.py` covers the hologram engine without a terminal: eased transitions, flashes, wave merging, tool progress, voice mode, projection bounds, Braille and pure-ASCII output at several sizes and in every theme, the bitmap renderer, the frame-rate governor and renderer detection. The hologram app tests follow real turns (thinking, tool, generating, success, error), `/hologram` and its arguments, `f3`, the layout at several terminal sizes, motion levels, audio levels from another thread, and the image renderer with its run-time fallback (when `textual-image` is installed). `tests/test_events.py` covers streaming against a real local HTTP endpoint (including fallback and truncated streams), the event order, cancellation, and the unchanged piped CLI output.
+`python -m unittest discover -s tests -v` runs everything. With Textual installed, `tests/test_tui.py` drives the app headlessly: streaming and saving a turn, tool rows, cancelling mid-turn with input still live, approving and declining changes, error cards, non-streaming providers, slash commands, autocomplete and multiline input, file mentions and previews (including a path outside the workspace), terminal resizing, and resuming saved history. `tests/test_hologram.py` covers the hologram engine without a terminal: eased transitions, flashes, wave merging, tool progress, voice mode, projection bounds, Braille and pure-ASCII output at several sizes and in every theme, the bitmap renderer, the frame-rate governor and renderer detection. The hologram app tests follow real turns (thinking, tool, generating, success, error), `/hologram` and its arguments, `f3`, the layout at several terminal sizes, motion levels, audio levels from another thread, and the image renderer with its run-time fallback (when `textual-image` is installed). `tests/test_tui_projects.py` drives the project screens: registering and opening a project, the home and its empty states, per-project drafts and attachments, switching during a turn with late events ignored, context-source lines, reviewing a reply before saving it, external-edit conflicts in the editor, task handoff and outcomes, keyboard navigation and layouts from 50 × 16 to 140 × 44; `tests/test_projects.py` covers the storage, notes and context logic without a terminal. `tests/test_events.py` covers streaming against a real local HTTP endpoint (including fallback and truncated streams), the event order, cancellation, and the unchanged piped CLI output.

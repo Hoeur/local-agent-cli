@@ -193,8 +193,9 @@ HELP = """\
 | Key | Action |
 |---|---|
 | `enter` | Send the message |
+| **Send** / **Stop** | Send the prompt / cancel the turn and keep your next draft |
 | `shift+enter` · `ctrl+j` | New line in the composer |
-| `up` / `down` | Prompt history (on the first or last line) |
+| `up` / `down` | Prompt history (first/last line); down past newest restores your draft |
 | `/` · `@` | Command and file autocomplete — `tab` or `enter` to accept |
 | `ctrl+p` | Command palette |
 | `ctrl+b` · `f2` | Toggle the sidebar |
@@ -207,7 +208,33 @@ HELP = """\
 | `ctrl+t` | Next theme |
 | `ctrl+l` | Clear the view (history stays saved) |
 | `ctrl+n` | New session |
+| `f5` | Projects: open, register, rename, unregister |
+| `f6` · `f7` | Project home · notes, ideas, decisions and tasks |
+| `f9` · **Save…** | Save the latest reply as an idea, note, decision or task (you edit it first) |
 | `ctrl+q` · `/exit` | Quit |
+
+After failure or cancellation, **Restore prompt** returns the prompt to an empty composer for editing. \
+It does not send automatically or overwrite another draft. Completed file changes and commands are not undone.
+
+## Projects
+
+A project is a registered folder. Opening one (`f5`) makes the folder the workspace and keeps its \
+conversations, task lists and generated artifacts apart from other projects. Its knowledge — overview, \
+notes, ideas, decisions and tasks — is plain Markdown in `.agent-project/` inside the folder, so you can \
+edit it in any editor and commit it.
+
+| Where | Keys |
+|---|---|
+| Projects | `enter` open · `a` register a folder · `r` rename · `m` folder moved · `d` unregister (deletes nothing) |
+| Project home | `c` chat · `b` brainstorm · `n` note · `t` task · `r` continue · `k` notes · `j` tasks · `d` decisions · `e` overview |
+| Notes | `enter` open · `e` edit · `n` new · `r` rename · `c` use in this chat · `x` idea → decision/task · `i` implement task · `o` record outcome · `s` status · `l` file path · `/` search · `tab` filter |
+| Editor | `ctrl+s` save · `esc` cancel — a file changed outside the app is never overwritten without asking |
+
+Each request includes the project overview when relevant, the notes you selected (`c`, `/context add`) \
+and up to three notes whose words match your message. A **context** line above each reply lists them; \
+`/context` explains why. `/implement <task>` starts a conversation with the task, its acceptance criteria \
+and linked decisions; `/outcome` records what changed, how it was verified and what is unresolved. \
+Tasks are completed only when you set the status.
 
 ## Commands
 

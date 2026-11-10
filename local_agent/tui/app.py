@@ -27,14 +27,18 @@ from textual.theme import Theme
 from textual.widgets import Button, Collapsible, DirectoryTree, Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from .. import providers, search
+from .. import project_commands, providers, search
 from .. import tools as toolkit
 from ..agent import MAX_TOOL_ROUNDS, TOOLS, Agent, TurnCancelled, tool_names
 from ..attachments import message_text
 from ..config import load_config, read_settings, save_config, set_active
 from ..file_commands import FILE_COMMANDS, FileCommands
+from ..projects import KINDS, NoteConflict, ProjectContext, ProjectError, ProjectRegistry, draft_from_reply
+from ..projects import record_outcome as record_task_outcome
 from . import clipboard, commands, effects, hologram
 from .holoview import HoloHud, HoloPanel, ViewControl, make_view
+from .project_screens import (ChoiceScreen, ConfirmScreen, NoteEditor, NotesScreen, OutcomeScreen, ProjectHome,
+                              ProjectsScreen)
 from .screens import ActionScreen, ApprovalScreen, FilePreview, HelpScreen
 from .theme import (DEFAULT_PREFS, HOLOGRAM_WIDTHS, MOTION_FPS, MOTION_LEVELS, PALETTES, TEXTUAL_LEVEL, detect_glyphs,
                     detect_motion, save_prefs)
@@ -109,7 +113,9 @@ class Clock:
 
 
 class TurnToken:
-    def __init__(self):
+    def __init__(self, project=""):
+        self.project = project  # Events from a turn of another project are ignored.
+        self.prompt = ""
         self.cancelled = False
         self.started = time.monotonic()
         self.prompt_tokens = 0
@@ -208,6 +214,10 @@ class AgentApp(App):
         Binding("f1", "help", "Help", priority=True),
         Binding("f3", "toggle_hologram", "Hologram", priority=True),
         Binding("f4", "copy_reply", "Copy reply", priority=True),
+        Binding("f5", "projects", "Projects", priority=True),
+        Binding("f6", "project_home", "Project home", priority=True),
+        Binding("f7", "notes", "Notes", priority=True),
+        Binding("f9", "save_reply", "Save reply to project", priority=True),
         Binding("alt+left", "rotate_hologram(-0.25, 0)", "Rotate", priority=True, show=False),
         Binding("alt+right", "rotate_hologram(0.25, 0)", "Rotate", priority=True, show=False),
         Binding("alt+up", "rotate_hologram(0, -0.18)", "Tilt", priority=True, show=False),
@@ -221,8 +231,19 @@ class AgentApp(App):
 
     def __init__(self, provider, state, data_dir: Path, config, session, workspace=None, learn=False,
                  auto_approve=False, prefs=None, environ=None, image_support=None, write=False, shell=False,
-                 web=False, max_rounds=MAX_TOOL_ROUNDS, attachments=()):
+                 web=False, max_rounds=MAX_TOOL_ROUNDS, attachments=(), project=None, draft=None):
         super().__init__()
+        # Projects: the registry, the open project (None for the classic sessions) and what each
+        # project left behind when the user switched away (draft, attachments, session).
+        self.registry = ProjectRegistry(data_dir)
+        self.project = project
+        self.project_generation = 0
+        self.stash = {}
+        self.context_sources = []
+        self.initial_draft = draft
+        self.base_state = state
+        self.classic_workspace = workspace.resolve() if workspace is not None and project is None else None
+        self.launch_flags = {"write": write, "shell": shell, "web": web}
         self.file_commands = FileCommands(state, attachments)
         environ = os.environ if environ is None else environ
         self.environ = environ
@@ -270,6 +291,7 @@ class AgentApp(App):
         self.estimated = False
         self.connection = "checking"
         self.last_reply = ""
+        self.recoverable_prompt = ""
         self.path_agent = Agent(None, state, self.workspace) if self.workspace is not None else None
         for name, palette in PALETTES.items():
             self.register_theme(Theme(
@@ -304,9 +326,18 @@ class AgentApp(App):
                 yield ChatLog(id="chat")
                 with Vertical(id="composer-area"):
                     with Horizontal(id="copy-tools"):
-                        yield Button("Copy reply", variant="primary", id="copy-reply", compact=True, flat=True,
+                        yield Button("Send", variant="primary", id="send-prompt", compact=True, flat=True,
+                                     action="app.send_prompt", tooltip="Send the current prompt (Enter)")
+                        yield Button("Stop", variant="error", id="stop-turn", compact=True, flat=True,
+                                     action="app.stop_reply", tooltip="Cancel the current turn (Esc)")
+                        yield Button("Restore prompt", id="restore-prompt", compact=True, flat=True,
+                                     action="app.restore_prompt", tooltip="Restore the failed or cancelled prompt for editing")
+                        yield Button("Copy reply", id="copy-reply", compact=True, flat=True,
                                      action="app.copy_reply", tooltip="Copy the latest reply (F4)")
-                        yield Static("Drag text + Ctrl+C", id="copy-hint")
+                        yield Button("Save…", id="save-reply", compact=True, flat=True,
+                                     action="app.save_reply",
+                                     tooltip="Save the latest reply as an idea, note, decision or task (F9)")
+                        yield Static("", id="copy-hint")
                     yield Suggestions(id="suggestions")
                     yield AttachmentBar(id="attachment-bar")
                     yield Composer(id="composer", placeholder="Ask anything  ·  / commands  ·  @ files"
@@ -318,8 +349,7 @@ class AgentApp(App):
         top = self.query_one(TopBar)
         top.model = self.config["model"]
         top.session = self.session
-        top.project = (self.workspace or Path.cwd()).name
-        top.branch = git_branch(self.workspace or Path.cwd()) or ""
+        self.refresh_project_labels()
         status = self.query_one(StatusBar)
         status.learn = self.learn
         status.budget = self.config["context_chars"]
@@ -330,6 +360,17 @@ class AgentApp(App):
         self.refresh_sidebar()
         await self.load_session(fade=False)
         await self.refresh_attachments()
+        if self.project is not None and self.state.conversation(self.session)["kind"] == "brainstorm" \
+                and not self.state.turn_count(self.session):
+            await self.note("Describe the problem or goal. The agent will restate it, explore alternatives, "
+                            "compare tradeoffs, list open questions and suggest next steps. Press **f9** to save "
+                            "an idea, note, decision or task from a reply; you edit it before it is saved.",
+                            "Brainstorm")
+        if self.initial_draft:
+            composer = self.query_one(Composer)
+            composer.load_text(self.initial_draft)
+            composer.move_cursor(composer.document.end)
+        self.refresh_composer_controls()
         self.query_one(Composer).focus()
         self.check_connection(False)
 
@@ -402,6 +443,7 @@ class AgentApp(App):
             for turn in turns[hidden:]:
                 await self.render_turn(chat, turn)
         self.layout_hologram()
+        self.refresh_composer_controls()
         chat.anchor()
         if fade and self.motion != "off":
             chat.styles.opacity = 0.0
@@ -433,7 +475,8 @@ class AgentApp(App):
 
     def welcome_info(self):
         sessions = dict(self.state.sessions())
-        info = [("model", self.config["model"]),
+        info = [("project", self.project.name)] if self.project is not None else []
+        info += [("model", self.config["model"]),
                 ("provider", self.provider_label()),
                 ("endpoint", urlsplit(self.config["base_url"]).netloc or self.config["base_url"]),
                 ("session", f"{self.session} (new)" if self.session not in sessions else self.session),
@@ -458,10 +501,14 @@ class AgentApp(App):
         if self.busy:
             self.notify("Wait for the current turn, or press esc to cancel it.", severity="warning")
             return
+        if name != self.session:
+            self.recoverable_prompt = ""
         self.session = name
+        self.remember_session()
         await self.load_session()
         self.refresh_sidebar()
-        self.notify(f"Session {name}", title="Switched", timeout=2)
+        kind = self.state.conversation(name)["kind"] if self.project is not None else "chat"
+        self.notify(f"Session {name}" + (f" · {kind}" if kind != "chat" else ""), title="Switched", timeout=2)
 
     # ── Sidebar ───────────────────────────────────────────────────────────────────────────
 
@@ -511,6 +558,7 @@ class AgentApp(App):
         for name in list(skills)[:8]:
             library.append(f"  {glyphs.arrow} {clean(name)}\n", Style(color=palette["muted"]))
         sidebar.query_one("#library-info", Static).update(library)
+        self.refresh_project_info()
 
     def refresh_tools(self, running=None):
         palette, glyphs = self.palette, self.glyphs
@@ -575,6 +623,36 @@ class AgentApp(App):
         composer.insert(f"@{label} ")
         composer.focus()
 
+    def refresh_project_info(self):
+        palette, glyphs = self.palette, self.glyphs
+        info = Text()
+        muted = Style(color=palette["muted"])
+        if self.project is None:
+            info.append("No project open.\n", Style(color=palette["foreground"]))
+            info.append("f5 open or register one\n", muted)
+        else:
+            info.append(f"{self.project.name}\n", Style(color=palette["primary"], bold=True))
+            info.append(f"{self.state.conversation(self.session)['kind']} conversation\n", muted)
+            try:
+                notes = self.project.knowledge.notes()
+            except (OSError, ProjectError):
+                notes = []
+            open_tasks = sum(note.kind == "task" and note.status != "completed" for note in notes)
+            info.append(f"{len(notes)} notes · {open_tasks} open tasks\n", muted)
+            selected = self.state.conversation(self.session)["notes"]
+            if selected:
+                info.append("selected\n", Style(color=palette["secondary"]))
+                for identifier in selected[:6]:
+                    info.append(f"  {glyphs.arrow} {clean(identifier)[:26]}\n", muted)
+            included = [source for source in self.context_sources if source.get("included")]
+            if included:
+                info.append("last context\n", Style(color=palette["secondary"]))
+                for source in included[:6]:
+                    info.append(f"  {glyphs.arrow} {clean(source['id'])[:26]}\n", muted)
+            info.append("f6 home · f7 notes · f9 save", muted)
+        self.query_one("#project-info", Static).update(info)
+        self.query_one("#project-section").title = f"Project · {self.project.name[:18]}" if self.project else "Project"
+
     # ── Composer, suggestions and slash commands ──────────────────────────────────────────
 
     def workspace_files(self):
@@ -609,6 +687,7 @@ class AgentApp(App):
                 "hologram": ["on", "off", *hologram.MODES, *hologram.SIZES, "still", "live", "reset", "status"],
                 "skill": list(self.state.library("skill")),
                 "todo": list(toolkit.TODO_ACTIONS),
+                **self.project_choices(name.lower()),
             }.get(name.lower(), [])
             return [(f"/{name} {choice}", choice, "") for choice in choices if choice.startswith(argument)
                     and choice != argument]
@@ -619,10 +698,79 @@ class AgentApp(App):
             return [(f"@{path}", path, "file") for path in matches[:12]]
         return []
 
+    def project_choices(self, name):
+        """Autocomplete values for project commands (only computed for the command being typed)."""
+        if name == "project":
+            try:
+                return {name: [project.id for project in self.registry.projects()] + ["none"]}
+            except ProjectError:
+                return {name: ["none"]}
+        if name in {"save", "create"}:
+            return {name: ["idea", "note", "decision", "task"] + (["overview"] if name == "create" else [])}
+        if name == "notes":
+            return {name: ["tasks", "decisions", "ideas", "notes", "overview"]}
+        if name == "context":
+            return {name: ["add", "remove", "clear"]}
+        if self.project is None or name not in {"note", "implement", "outcome"}:
+            return {}
+        try:
+            kinds = ["task"] if name != "note" else None
+            notes = self.project.knowledge.notes(kinds)
+        except (OSError, ProjectError):
+            return {}
+        return {name: [note.id for note in notes if name == "note" or note.status != "completed"]}
+
     def on_text_area_changed(self, event):
         if event.text_area.id != "composer":
             return
         self.update_suggestions()
+        self.refresh_composer_controls()
+
+    def refresh_composer_controls(self):
+        composer = self.query_one(Composer)
+        send = self.query_one("#send-prompt", Button)
+        send.display = not self.busy
+        send.disabled = not composer.text.strip()
+        self.query_one("#stop-turn").display = self.busy
+        restore = self.query_one("#restore-prompt", Button)
+        restore.display = bool(self.recoverable_prompt) and not self.busy
+        restore.disabled = bool(composer.text)
+        self.query_one("#copy-reply", Button).disabled = not self.last_reply
+        save = self.query_one("#save-reply", Button)
+        save.display = self.project is not None
+        save.disabled = not self.last_reply
+        if self.busy:
+            hint = "Working · draft your next message · Esc stop"
+        elif self.recoverable_prompt:
+            hint = ("Clear draft to restore previous prompt" if composer.text else
+                    "Restore to edit · completed actions may remain")
+        else:
+            hint = "Enter send · Ctrl+J newline"
+        self.query_one("#copy-hint", Static).update(hint)
+
+    def action_send_prompt(self):
+        composer = self.query_one(Composer)
+        composer.focus()
+        if not self.busy:
+            composer.submit()
+
+    async def action_stop_reply(self):
+        await self.cancel_turn()
+        self.query_one(Composer).focus()
+
+    def action_restore_prompt(self):
+        composer = self.query_one(Composer)
+        if self.busy or not self.recoverable_prompt:
+            return
+        if composer.text:
+            self.notify("Keep or clear your draft before restoring the previous prompt.", severity="warning")
+            return
+        composer.load_text(self.recoverable_prompt)
+        composer.move_cursor(composer.document.end)
+        self.recoverable_prompt = ""
+        self.refresh_composer_controls()
+        composer.focus()
+        self.notify("Prompt restored for editing. Review completed actions before sending again.", timeout=5)
 
     def update_suggestions(self):
         composer = self.query_one(Composer)
@@ -792,6 +940,12 @@ class AgentApp(App):
                 return
             value = {"on": True, "off": False}.get(argument.lower(), not getattr(self, name))
             setattr(self, name, value)
+            if self.project is not None:
+                try:
+                    self.registry.update_settings(self.project.id, tools={key: getattr(self, key)
+                                                                          for key in ("write", "shell", "web")})
+                except ProjectError:
+                    pass
             self.refresh_tools()
             label = {"write": "File changes", "shell": "Shell commands", "web": "Web access"}[name]
             detail = ("You approve each one." if name != "web" else
@@ -842,7 +996,122 @@ class AgentApp(App):
             await self.model_command(argument)
         elif name == "copy":
             self.action_copy_reply()
+        elif name in project_commands.PROJECT_COMMANDS or name == "create":
+            await self.project_slash(name, argument)
         chat.anchor()
+
+    async def project_slash(self, name, argument):
+        """/projects, /project, /notes, /note, /create, /tasks, /decisions, /find, /save, /context,
+        /brainstorm, /implement and /outcome."""
+        if name == "projects":
+            self.action_projects()
+            return
+        if name == "project":
+            if not argument:
+                self.action_project_home()
+            elif argument.lower() in {"none", "classic", "off"}:
+                await self.open_project(None)
+            else:
+                try:
+                    project = self.registry.find(argument)
+                except ProjectError as error:
+                    self.notify(clean(str(error)), severity="error", timeout=6)
+                    return
+                await self.open_project(project, show_home=True)
+            return
+        if self.project is None:
+            self.notify("Open a project first: f5, or /project NAME.", severity="warning", timeout=4)
+            return
+        if name in {"notes", "tasks", "decisions"}:
+            kind = {"tasks": "task", "decisions": "decision"}.get(name)
+            if name == "notes" and argument:
+                try:
+                    kind = project_commands.kind_of(argument)
+                except ProjectError:
+                    self.push_screen(NotesScreen(query=argument))
+                    return
+            self.push_screen(NotesScreen(kind=kind))
+        elif name == "find":
+            if not argument:
+                self.notify("Usage: /find <words>", severity="warning")
+            else:
+                self.push_screen(NotesScreen(query=argument))
+        elif name == "note":
+            if not argument:
+                self.push_screen(NotesScreen())
+                return
+            try:
+                note = self.project.knowledge.find(argument)
+            except ProjectError as error:
+                self.notify(clean(str(error)), severity="error", timeout=5)
+                return
+            self.push_screen(NotesScreen(kind=note.kind, select=note.id, view=True))
+        elif name == "create":
+            kind, _, title = argument.partition(" ")
+            try:
+                kind = project_commands.kind_of(kind or "note")
+            except ProjectError as error:
+                self.notify(clean(str(error)), severity="error")
+                return
+            if kind == "overview" and self.project.knowledge.overview() is not None:
+                self.push_screen(NoteEditor(note=self.project.knowledge.overview()))
+                return
+            self.edit_new_note(kind, title.strip() or (self.project.name if kind == "overview" else ""))
+        elif name == "save":
+            kind = argument.split(" ", 1)[0] if argument else None
+            if kind:
+                try:
+                    kind = project_commands.kind_of(kind)
+                except ProjectError as error:
+                    self.notify(clean(str(error)), severity="error")
+                    return
+            self.save_reply(kind, argument.partition(" ")[2].strip() or None)
+        elif name == "context":
+            await self.context_command(argument)
+        elif name == "brainstorm":
+            await self.start_conversation("brainstorm", argument or None)
+        elif name == "implement":
+            if not argument:
+                self.push_screen(NotesScreen(kind="task"))
+                self.notify("Choose a task and press i to implement it.", timeout=3)
+            else:
+                await self.start_implementation(argument)
+        elif name == "outcome":
+            reference = argument or self.state.conversation(self.session)["task"]
+            if not reference:
+                self.notify("Usage: /outcome <task> (or run it in an implementation conversation)", severity="warning")
+            else:
+                self.record_outcome(reference)
+
+    async def context_command(self, argument):
+        action, _, rest = argument.partition(" ")
+        if action in {"add", "remove"} and rest.strip():
+            try:
+                note = self.project.knowledge.find(rest.strip())
+            except ProjectError as error:
+                self.notify(clean(str(error)), severity="error")
+                return
+            selected = self.state.conversation(self.session)["notes"]
+            if (note.id in selected) != (action == "add"):
+                self.toggle_context_note(note.id)
+        elif action == "clear":
+            self.state.set_conversation(self.session, notes=[])
+            self.refresh_project_info()
+        elif action:
+            self.notify("Usage: /context [add <note> | remove <note> | clear]", severity="warning")
+            return
+        selected = self.state.conversation(self.session)["notes"]
+        body = ["**Selected for this conversation:** " + (", ".join(f"`{item}`" for item in selected) or "none"),
+                "", "The overview and up to three notes whose words match your message are added automatically, "
+                "within a quarter of the context budget. Notes are sent as reference material, never as "
+                "instructions. Select notes with **c** in the notes browser (f7) or `/context add <note>`."]
+        if self.context_sources:
+            body += ["", "**Last request:**", ""]
+            body += [f"- `{clean(source['id'])}` — {clean(source['reason'])}"
+                     + (" _(shortened)_" if source.get("truncated") else "")
+                     + ("" if source.get("included") else f" — **not included:** {clean(source.get('note', ''))}")
+                     for source in self.context_sources]
+        await self.note("\n".join(body), f"Context · {self.session}")
 
     async def todo_command(self, argument):
         """/todo shows the session's task list; /todo add|edit|move|start|done|undo|remove changes it.
@@ -868,6 +1137,267 @@ class AgentApp(App):
         elif not argument:
             body += f"\n\n_{toolkit.TODO_USAGE}_"
         await self.note(body, f"Tasks · {self.session}" + (f" · {message}" if message else ""))
+
+    # ── Projects ──────────────────────────────────────────────────────────────────────────
+
+    @property
+    def project_key(self):
+        return self.project.id if self.project is not None else ""
+
+    def refresh_project_labels(self):
+        top = self.query_one(TopBar)
+        root = self.workspace or Path.cwd()
+        top.project = self.project.name if self.project is not None else root.name
+        top.branch = git_branch(root) or ""
+
+    def remember_session(self):
+        if self.project is not None:
+            try:
+                self.registry.update_settings(self.project.id, last_session=self.session)
+            except (OSError, ProjectError):
+                pass
+
+    async def open_project(self, project, session=None, *, show_home=False, origin=None, quiet=False, force=False):
+        """Switch to a project (or to the classic sessions with None). The draft, queued attachments and
+        session of the project being left are kept and come back when the user returns to it. A running
+        turn is cancelled only after the user agrees; its late events are then ignored."""
+        if project is not None:
+            try:
+                project.require_folder()
+            except ProjectError as error:
+                self.notify(clean(str(error)), severity="error", timeout=8)
+                return False
+        if self.busy and not force:
+            async def decided(cancel):
+                if cancel:
+                    await self.cancel_turn()
+                    await self.open_project(project, session, show_home=show_home, origin=origin, quiet=quiet,
+                                            force=True)
+            where = project.name if project is not None else "the classic sessions"
+            self.push_screen(ConfirmScreen("A turn is still running",
+                                           f"Switching to {where} cancels it. Nothing from the turn is saved; file "
+                                           "changes and commands it already made stay.", "Cancel turn and switch",
+                                           "Stay", danger=True), decided)
+            return False
+        composer = self.query_one(Composer)
+        self.stash[self.project_key] = {"draft": composer.text, "attachments": list(self.file_commands.pending),
+                                        "recoverable": self.recoverable_prompt, "session": self.session}
+        self.remember_session()
+        self.project = project
+        self.project_generation += 1
+        self.context_sources = []
+        self.state = self.base_state.for_project(self.project_key)
+        self.workspace = project.path.resolve() if project is not None else self.classic_workspace
+        tools = project.settings.get("tools") if project is not None else None
+        if isinstance(tools, dict):
+            flags = {key: bool(tools.get(key)) for key in ("write", "shell", "web")}
+        elif project is None:
+            flags = dict(self.launch_flags)
+        else:
+            flags = {"write": False, "shell": False, "web": self.launch_flags["web"]}
+        self.write = flags["write"] and self.workspace is not None
+        self.shell = flags["shell"] and self.workspace is not None
+        self.web = flags["web"]
+        self.path_agent = Agent(None, self.state, self.workspace) if self.workspace is not None else None
+        self.file_index = None
+        self.refs.clear()
+        stash = self.stash.pop(self.project_key, {})
+        composer.load_text(stash.get("draft", ""))
+        composer.move_cursor(composer.document.end)
+        self.file_commands.pending = list(stash.get("attachments", []))
+        self.recoverable_prompt = stash.get("recoverable", "")
+        last = project.settings.get("last_session") if project is not None else None
+        self.session = session or stash.get("session") or (last if isinstance(last, str) and last else "default")
+        try:
+            if project is not None:
+                self.project = self.registry.mark_opened(project.id)
+            else:
+                self.registry.forget_last()
+        except (OSError, ProjectError) as error:
+            self.notify(clean(str(error)), severity="warning", timeout=5)
+        try:
+            from .widgets import Explorer
+            self.query_one(Explorer).path = self.workspace or Path.cwd()
+        except Exception:  # noqa: BLE001 - the explorer is a convenience; never block a switch on it
+            pass
+        self.refresh_project_labels()
+        while len(self.screen_stack) > 1:
+            self.pop_screen()
+        await self.load_session()
+        await self.refresh_attachments()
+        self.refresh_sidebar()
+        self.refresh_composer_controls()
+        composer.focus()
+        if show_home and project is not None:
+            self.push_screen(ProjectHome())
+        if not quiet:
+            label = project.name if project is not None else "Classic sessions"
+            enabled = [name for name in ("write", "shell", "web") if getattr(self, name)]
+            detail = f"{self.workspace}" if project is not None else "Conversations outside projects"
+            self.notify(f"{detail}\nTools: {', '.join(enabled) or 'read-only'}", title=label, timeout=4)
+        return True
+
+    def action_projects(self):
+        if not isinstance(self.screen, ProjectsScreen):
+            self.push_screen(ProjectsScreen())
+
+    def action_project_home(self):
+        if self.project is None:
+            self.notify("No project is open. Choose or register one.", timeout=3)
+            self.action_projects()
+        elif not isinstance(self.screen, ProjectHome):
+            self.push_screen(ProjectHome())
+
+    def action_notes(self):
+        if self.project is None:
+            self.action_project_home()
+        elif not isinstance(self.screen, NotesScreen):
+            self.push_screen(NotesScreen())
+
+    def action_save_reply(self):
+        self.save_reply(None)
+
+    async def start_conversation(self, kind, topic=None):
+        if self.busy:
+            self.notify("Wait for the current turn, or press esc to cancel it.", severity="warning")
+            return
+        if kind == "brainstorm" and self.project is None:
+            self.notify("Brainstorms belong to a project. Open one with f5.", severity="warning", timeout=4)
+            return
+        if kind == "brainstorm":
+            session = project_commands.brainstorm_session(self.state)
+        else:
+            session = datetime.now().strftime("chat-%m%d-%H%M%S")
+        await self.switch_session(session)
+        if kind == "brainstorm":
+            await self.note("Describe the problem or goal. The agent will restate it, explore alternatives, "
+                            "compare tradeoffs, list open questions and suggest next steps.\n\n"
+                            "When something is worth keeping, press **f9** (or `/save idea|note|decision|task`): "
+                            "you review and edit the draft before it is saved, linked to this conversation.",
+                            "Brainstorm")
+            if topic:
+                await self.start_turn(f"Let's brainstorm: {topic}")
+
+    async def start_implementation(self, reference):
+        if self.project is None:
+            self.notify("Open a project first.", severity="warning")
+            return
+        if self.busy:
+            self.notify("Wait for the current turn, or press esc to cancel it.", severity="warning")
+            return
+        try:
+            session, task, prompt = project_commands.start_implementation(self.project, self.state, reference)
+        except NoteConflict as error:
+            self.notify(clean(str(error)) + " Reload the task and try again.", severity="error", timeout=6)
+            return
+        except (OSError, ProjectError) as error:
+            self.notify(clean(str(error)), severity="error", timeout=6)
+            return
+        while len(self.screen_stack) > 1:
+            self.pop_screen()
+        await self.switch_session(session)
+        composer = self.query_one(Composer)
+        if not composer.text.strip():
+            composer.load_text(prompt)
+            composer.move_cursor(composer.document.end)
+            hint = "Review the first message, then press enter."
+        else:
+            hint = "Your draft was kept; clear it and run /implement again for the suggested first message."
+        missing = [label for flag, label in ((self.write, "/write on"), (self.shell, "/shell on")) if not flag]
+        if missing:
+            hint += f" File changes or commands are off: {' and '.join(missing)} to allow them (you approve each)."
+        await self.note(f"**{clean(task.title)}** · `{task.id}` · {task.status}\n\n{hint}\n\nWhen it's done, "
+                        "record the outcome with `/outcome` — the task stays open until you complete it.",
+                        "Implementation")
+        composer.focus()
+        self.refresh_composer_controls()
+
+    def edit_new_note(self, kind, title="", body=None, *, related=(), conversations=(), callback=None):
+        if self.project is None:
+            self.notify("Open a project first.", severity="warning")
+            return
+        def saved(note):
+            if note is not None:
+                self.refresh_project_info()
+            if callback is not None:
+                callback(note)
+        self.push_screen(NoteEditor(kind=kind, title=title, body=body, related=related,
+                                    conversations=conversations), saved)
+
+    def save_reply(self, kind=None, title=None):
+        """Turn the latest reply into a draft idea, note, decision or task for the user to review."""
+        if self.project is None:
+            self.notify("Open a project to save replies as notes (f5).", severity="warning", timeout=3)
+            return
+        if not self.last_reply:
+            self.notify("There is no reply to save yet.", timeout=2)
+            return
+        if kind is None:
+            self.push_screen(ChoiceScreen("Save the latest reply as…", "You can edit the draft before it is saved.", [
+                ("i", "Idea", "idea"), ("n", "Note", "note"), ("d", "Decision", "decision"), ("t", "Task", "task")]),
+                lambda chosen: chosen and self.save_reply(chosen, title))
+            return
+        title, body = draft_from_reply(kind, self.last_reply, self.session, title)
+        self.edit_new_note(kind, title, body, conversations=[self.session])
+
+    def record_outcome(self, reference, callback=None):
+        try:
+            task = self.project.knowledge.find(reference, ["task"])
+        except (OSError, ProjectError) as error:
+            self.notify(clean(str(error)), severity="error", timeout=5)
+            return
+        details = self.state.conversation(self.session)
+        session = self.session if details["task"] == task.id else None
+        draft = ""
+        if session and self.last_reply:
+            draft = next((part.strip() for part in self.last_reply.split("\n\n") if part.strip()), "")[:600]
+
+        def recorded(values):
+            if not values:
+                return
+            try:
+                fresh = self.project.knowledge.get(task.id)
+                updated = record_task_outcome(self.project.knowledge, fresh, values["outcome"],
+                                              values["verification"], values["unresolved"], session or None,
+                                              values["status"])
+            except (OSError, ProjectError) as error:
+                self.notify(clean(str(error)), severity="error", timeout=6)
+                return
+            self.notify(f"Recorded the outcome for {updated.title} · status {updated.status}.", title="Task",
+                        timeout=4)
+            self.refresh_project_info()
+            if callback is not None:
+                callback(updated)
+        self.push_screen(OutcomeScreen(task, draft), recorded)
+
+    def toggle_context_note(self, identifier):
+        selected = self.state.conversation(self.session)["notes"]
+        added = identifier not in selected
+        selected = [*selected, identifier] if added else [item for item in selected if item != identifier]
+        self.state.set_conversation(self.session, notes=selected)
+        self.refresh_project_info()
+        return added
+
+    def context_card(self, sources):
+        """One line above the reply: which project notes went with the request, and why."""
+        if not sources:
+            return None
+        palette = self.palette
+        line = Text()
+        line.append(f"{self.glyphs.arrow} context ", Style(color=palette["secondary"], bold=True))
+        parts = []
+        for source in sources:
+            part = Text()
+            if source.get("included"):
+                part.append(clean(source["id"]), Style(color=palette["foreground"]))
+                part.append(f" ({clean(source['reason'])}{', shortened' if source.get('truncated') else ''})",
+                            Style(color=palette["muted"]))
+            else:
+                part.append(f"{clean(source['id'])} skipped", Style(color=palette["warning"]))
+            parts.append(part)
+        line.append_text(Text(" · ", Style(color=palette["muted"])).join(parts))
+        line.append("   /context for details", Style(color=palette["muted"], italic=True))
+        return NoteCard(line, "context-sources")
 
     # ── Attachments and artifacts ─────────────────────────────────────────────────────────
 
@@ -1062,13 +1592,17 @@ class AgentApp(App):
         reply = AssistantMessage(live=True)
         await chat.mount(reply)
         chat.anchor()
-        token = TurnToken()
+        token = TurnToken(self.project_key)
+        token.prompt = prompt
+        self.recoverable_prompt = ""
         self.token, self.current = token, reply
         self.set_state("thinking", "")
-        threading.Thread(target=self.turn_thread, args=(token, prompt, self.session, self.learn, attachments),
+        scope = {"state": self.state, "workspace": self.workspace, "write": self.write, "shell": self.shell,
+                 "web": self.web, "project": self.project}
+        threading.Thread(target=self.turn_thread, args=(token, prompt, self.session, self.learn, attachments, scope),
                          name="agent-turn", daemon=True).start()
 
-    def turn_thread(self, token, prompt, session, learn, attachments):
+    def turn_thread(self, token, prompt, session, learn, attachments, scope=None):
         lock = threading.Lock()
         batch = None
 
@@ -1100,11 +1634,15 @@ class AgentApp(App):
             return self.ask_from_thread(token, "confirm", {"action": action})
 
         content, error = None, None
+        scope = scope or {"state": self.state, "workspace": self.workspace, "write": self.write,
+                          "shell": self.shell, "web": self.web, "project": self.project}
         try:
-            agent = Agent(self.provider, self.state, self.workspace, self.config["context_chars"],
+            state, project = scope["state"], scope["project"]
+            agent = Agent(self.provider, state, scope["workspace"], self.config["context_chars"],
                           (lambda changes: True) if self.auto_approve else approve, on_event,
-                          confirm=confirm, write=self.write, shell=self.shell, web=self.web,
-                          max_rounds=self.max_rounds, image_provider=providers.make_image_provider(self.config))
+                          confirm=confirm, write=scope["write"], shell=scope["shell"], web=scope["web"],
+                          max_rounds=self.max_rounds, image_provider=providers.make_image_provider(self.config),
+                          project_context=ProjectContext(project, state) if project is not None else None)
             content = agent.turn(session, prompt, learn, attachments=attachments)
         except Exception as caught:  # Shown in the UI; the agent has already discarded the turn.
             error = caught
@@ -1130,7 +1668,7 @@ class AgentApp(App):
 
     async def on_agent_event(self, event: AgentEvent):
         token, reply = event.token, self.current
-        if token is not self.token or reply is None:
+        if token is not self.token or reply is None or token.project != self.project_key:
             if event.kind in {"approval", "confirm"}:
                 event.data["done"](False)
             return
@@ -1214,6 +1752,12 @@ class AgentApp(App):
                         title="Tasks", timeout=4)
         elif event.kind == "commit":
             token.changes = data["changes"]
+        elif event.kind == "context":
+            self.context_sources = data["sources"]
+            self.refresh_project_info()
+            card = self.context_card(data["sources"])
+            if card is not None:
+                await self.query_one(ChatLog).mount(card, before=reply)
         elif event.kind == "done":
             await reply.set_content(data["content"])
             if data["workspace_writes"]:
@@ -1221,7 +1765,7 @@ class AgentApp(App):
 
     async def on_turn_finished(self, message: TurnFinished):
         token, reply = message.token, self.current
-        if token is not self.token:
+        if token is not self.token or token.project != self.project_key:
             return
         self.token = self.current = None
         elapsed = time.monotonic() - token.started
@@ -1247,8 +1791,10 @@ class AgentApp(App):
             if self.connection != "online":
                 self.set_connection("online")
         elif isinstance(message.error, TurnCancelled):
+            self.recoverable_prompt = token.prompt
             await self.finish_cancelled(reply)
         else:
+            self.recoverable_prompt = token.prompt
             for card in reply.artifacts:
                 card.mark_removed()
             await reply.finish("failed")
@@ -1281,6 +1827,7 @@ class AgentApp(App):
             return
         token.cancelled = True
         self.token = self.current = None
+        self.recoverable_prompt = token.prompt
         if isinstance(self.screen, (ApprovalScreen, ActionScreen)):
             self.screen.dismiss(False)
         await self.finish_cancelled(reply)
@@ -1290,6 +1837,7 @@ class AgentApp(App):
     def set_state(self, state, detail):
         status = self.query_one(StatusBar)
         status.state, status.detail = state, detail
+        self.refresh_composer_controls()
         self.query_one(TopBar).busy = state in {"thinking", "streaming", "tool", "approval"}
         holo_state = {"thinking": "thinking", "streaming": "generating", "tool": "tool",
                       "approval": "waiting"}.get(state, "idle")

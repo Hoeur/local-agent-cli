@@ -109,11 +109,14 @@ def report_workspace_writes(kind, data):
         print(data["workspace_writes"], file=sys.stderr)
 
 
-def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint=False, attachments=()):
+def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint=False, attachments=(),
+              project=None, suggested=None):
     """Interactive line-based chat. Returns an exit code."""
     from .file_commands import FileCommands
+    from .project_commands import ProjectCommands
 
     files = FileCommands(agent.state, attachments)
+    project_commands = ProjectCommands(project, agent.state)
     out = Style(sys.stdout)
     styled = out.enabled and sys.stdin.isatty()
     if styled:
@@ -124,6 +127,14 @@ def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint
             print(out('  For the full-screen interface: pip install -e ".[tui]"', DIM))
     else:
         print(f"Session {session!r}. Enter /exit to leave.")
+    if project is not None:
+        kind = agent.state.conversation(session)["kind"]
+        print(out(f"  project {printable(project.name)} · {project.path} · {kind} · /project /notes /tasks "
+                  "/find /save /context /outcome", DIM) if styled else
+              f"Project {printable(project.name)} ({project.path}), {kind} conversation.")
+    if suggested:
+        print("Suggested first message (copy it, or write your own):")
+        print("\n".join("  " + printable(line) for line in suggested.splitlines()))
     spinner = Spinner(Style(sys.stderr))
 
     def paused(ask):
@@ -153,6 +164,10 @@ def chat_loop(agent, session, learn, model, printable, approve, errors, tui_hint
             continue
         spinner.label = "thinking"
         try:
+            note = project_commands.handle(prompt, session)
+            if note is not None:
+                print("\n".join(printable(line) for line in note.splitlines()))
+                continue
             note = files.handle(prompt)
             if note is not None:
                 print("\n".join(printable(line) for line in note.splitlines()))

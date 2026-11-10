@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DOCS = [ROOT / "README.md", ROOT / "docs" / "TUI.md"]
+DOCS = [ROOT / "README.md", ROOT / "docs" / "TUI.md", ROOT / "docs" / "PROJECTS.md"]
 
 
 def command_blocks(path):

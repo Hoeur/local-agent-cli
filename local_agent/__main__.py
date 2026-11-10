@@ -12,6 +12,9 @@ from . import search as web_search_providers
 from .config import DEFAULT_CONTEXT_CHARS, load_config, parse_context_chars, read_settings, save_config, set_active
 from .file_commands import artifact_list, artifact_text
 from .state import State
+from . import project_commands as project_cli
+from .projects import (TASK_STATUSES, ProjectContext, ProjectError, ProjectRegistry, normalize_path,
+                       normalize_status, record_outcome)
 
 
 def printable(text):
@@ -198,6 +201,118 @@ def web_search_command(data_dir, name=None):
     return 0
 
 
+def project_command(args):
+    registry = ProjectRegistry(args.data_dir)
+    action = args.project_action
+    if action == "list":
+        print(printable_block(project_cli.project_list(registry)))
+    elif action == "add":
+        project = registry.add(args.folder, args.name)
+        print(f"Registered {project.name!r} ({project.id}) at {project.path}.")
+        print(f"Notes will be kept in {project.knowledge.directory} when you add the first one. "
+              f"Start with: python -m local_agent chat --project {project.id}")
+    elif action == "show":
+        project = project_cli.resolve_project(registry, args.name)
+        print(printable_block(project_cli.home_text(project, State(args.data_dir).for_project(project.id))))
+    elif action == "rename":
+        project = registry.rename(args.name, args.new_name)
+        print(f"Renamed to {project.name!r}. Its id stays {project.id}.")
+    elif action == "move":
+        project = registry.move(args.name, args.folder)
+        print(f"{project.name!r} now points at {project.path}.")
+    elif action == "remove":
+        project = registry.remove(args.name)
+        print(f"Unregistered {project.name!r}. Nothing was deleted: {project.path} and its notes are unchanged, "
+              "and its conversations stay in the data directory if you register the folder again.")
+    return 0
+
+
+def note_command(args):
+    registry = ProjectRegistry(args.data_dir)
+    project = project_cli.resolve_project(registry, args.project).require_folder()
+    knowledge = project.knowledge
+    action = args.note_action
+    if action == "list":
+        kinds = [project_cli.kind_of(args.kind)] if args.kind else None
+        print(printable_block(project_cli.note_list(knowledge, kinds)))
+    elif action == "search":
+        notes = knowledge.search(" ".join(args.words))
+        print(printable_block("\n".join(project_cli.note_line(note) for note in notes) or "No matching notes."))
+    elif action == "show":
+        print(printable_block(project_cli.note_text(knowledge, knowledge.find(args.note))))
+    elif action == "path":
+        print(knowledge.find(args.note).path)
+    elif action == "new":
+        kind = project_cli.kind_of(args.kind)
+        body = sys.stdin.read() if args.text == "-" else args.text
+        body = f"# {args.title}\n\n{body}\n" if body is not None else None
+        note = knowledge.create(kind, args.title, body, related=args.related)
+        print(f"Created {note.id} in {note.path}")
+    elif action == "rename":
+        note = knowledge.rename(knowledge.find(args.note), args.title)
+        print(f"Renamed {note.id} to {note.title!r} ({note.path.name}). Links to it still work.")
+    return 0
+
+
+def task_command(args):
+    registry = ProjectRegistry(args.data_dir)
+    project = project_cli.resolve_project(registry, args.project).require_folder()
+    knowledge = project.knowledge
+    action = args.task_action
+    if action == "list":
+        print(printable_block(project_cli.note_list(knowledge, ["task"], include_completed=args.all)))
+    elif action == "new":
+        criteria = "\n".join(f"- [ ] {item}" for item in args.criterion) or "- [ ] "
+        body = (f"# {args.title}\n\n## Description\n\n{args.description or ''}\n\n## Acceptance criteria\n\n"
+                f"{criteria}\n\n## Outcome\n\n_Not recorded yet._\n")
+        task = knowledge.create("task", args.title, body, related=args.related)
+        print(f"Created {task.id} in {task.path}")
+    elif action == "status":
+        task = knowledge.find(args.task, ["task"])
+        task.status = normalize_status(args.status)
+        task = knowledge.save(task)
+        print(f"{task.id} is now {task.status}.")
+    elif action == "outcome":
+        task = record_outcome(knowledge, knowledge.find(args.task, ["task"]), args.outcome, args.verified or "",
+                              args.unresolved or "", args.session, args.status)
+        print(f"Recorded the outcome for {task.id} (status {task.status}) in {task.path}")
+    return 0
+
+
+def printable_block(text):
+    return "\n".join(printable(line) for line in str(text).splitlines())
+
+
+def chat_project(args, interactive):
+    """Which project a chat opens, if any, and the session within it.
+
+    --project opens one; --no-project keeps the classic, project-less sessions. Otherwise an
+    interactive chat started without --session or --workspace resumes the project containing the
+    current folder, or the last opened one. One-shot prompts never pick a project on their own."""
+    registry = ProjectRegistry(args.data_dir)
+    if args.no_project:
+        if args.project or args.task or args.brainstorm:
+            raise ValueError("--no-project can't be combined with --project, --task or --brainstorm.")
+        return registry, None
+    if args.project or args.task or args.brainstorm:
+        project = project_cli.resolve_project(registry, args.project)
+    elif interactive and args.prompt is None and args.session is None and args.workspace is None:
+        try:
+            project = registry.containing(Path.cwd()) or registry.last()
+        except ProjectError as error:
+            print(f"Note: {error}", file=sys.stderr)
+            return registry, None
+        if project is not None and not project.available:
+            print(f"Note: not reopening {project.name!r}. {project.missing_message()}", file=sys.stderr)
+            return registry, None
+    else:
+        project = None
+    if project is not None:
+        project.require_folder()
+        registry.mark_opened(project.id)
+    return registry, project
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m local_agent", description="A local tool-using agent.")
     parser.add_argument("--data-dir", type=Path, default=Path(".agent"), help="SQLite state directory")
@@ -237,11 +352,19 @@ def main(argv=None):
     key_remove = key_actions.add_parser("remove", help="Delete a saved key")
     key_remove.add_argument("name")
     key_actions.add_parser("list", help="Show which keys are set (never the keys themselves)")
-    commands.add_parser("sessions", help="List saved sessions")
+    scope = "Conversations of this project (default: the classic sessions outside projects)"
+    sessions = commands.add_parser("sessions", help="List saved sessions")
+    sessions.add_argument("--project", help=scope)
     history = commands.add_parser("history", help="Show a saved conversation")
     history.add_argument("session")
+    history.add_argument("--project", help=scope)
     chat = commands.add_parser("chat", help="Start or resume a named chat")
-    chat.add_argument("--session", default="default")
+    chat.add_argument("--session", help="Conversation name (default: default, or the project's last one)")
+    chat.add_argument("--project", help="Open a registered project: its folder becomes the workspace and its "
+                                        "notes are available as context")
+    chat.add_argument("--no-project", action="store_true", help="Don't reopen the last project")
+    chat.add_argument("--brainstorm", action="store_true", help="Start a brainstorming conversation in the project")
+    chat.add_argument("--task", help="Start or resume the implementation conversation for a project task")
     chat.add_argument("--attach", action="append", default=[], type=Path, help="Attach an image or UTF-8 file")
     chat.add_argument("--workspace", type=Path, help="Allow the model to read files in this directory")
     chat.add_argument("--write", action="store_true", help="Allow file changes in the workspace (each one approved)")
@@ -273,13 +396,81 @@ def main(argv=None):
     skill.add_argument("--delete", action="store_true", help="Delete it instead of showing it")
     search = commands.add_parser("search", help="Search past conversations")
     search.add_argument("query")
+    search.add_argument("--project", help=scope)
     todo = commands.add_parser("todo", help="Show a session's task list")
     todo.add_argument("session", nargs="?", default="default")
+    todo.add_argument("--project", help=scope)
     delete = commands.add_parser("delete-session", help="Delete a saved conversation and its task list")
     delete.add_argument("session")
+    delete.add_argument("--project", help=scope)
+
+    project = commands.add_parser("project", help="Register, list, rename or unregister project folders")
+    project_actions = project.add_subparsers(dest="project_action", required=True)
+    project_add = project_actions.add_parser("add", help="Register an existing folder as a project")
+    project_add.add_argument("folder", type=Path)
+    project_add.add_argument("--name", help="Display name (default: the folder name)")
+    project_actions.add_parser("list", help="List registered projects")
+    project_show = project_actions.add_parser("show", help="Show a project's home: overview, tasks, notes, chats")
+    project_show.add_argument("name", nargs="?")
+    project_rename = project_actions.add_parser("rename", help="Change a project's display name")
+    project_rename.add_argument("name")
+    project_rename.add_argument("new_name")
+    project_move = project_actions.add_parser("move", help="Point a project at its folder's new location")
+    project_move.add_argument("name")
+    project_move.add_argument("folder", type=Path)
+    project_remove = project_actions.add_parser("remove", help="Unregister a project (deletes nothing)")
+    project_remove.add_argument("name")
+
+    which = "Project id or name (default: the project containing this folder, else the last opened)"
+    note = commands.add_parser("note", help="List, search, show or create project notes")
+    note_actions = note.add_subparsers(dest="note_action", required=True)
+    note_list = note_actions.add_parser("list", help="List notes")
+    note_list.add_argument("--kind", help="overview, note, idea, decision or task")
+    note_search = note_actions.add_parser("search", help="Find notes containing every word")
+    note_search.add_argument("words", nargs="+")
+    note_show = note_actions.add_parser("show", help="Show a note with its links")
+    note_show.add_argument("note", help="Id, title, or a unique prefix of either")
+    note_path = note_actions.add_parser("path", help="Print a note's file path")
+    note_path.add_argument("note")
+    note_new = note_actions.add_parser("new", help="Create a note")
+    note_new.add_argument("kind", help="overview, note, idea, decision or task")
+    note_new.add_argument("title")
+    note_new.add_argument("--text", help="Body text, or - to read it from standard input (default: a template)")
+    note_new.add_argument("--related", action="append", default=[], help="Id of a related note (repeatable)")
+    note_rename = note_actions.add_parser("rename", help="Change a note's title and file name (its id stays)")
+    note_rename.add_argument("note")
+    note_rename.add_argument("title")
+    task = commands.add_parser("task", help="List, create and update project tasks")
+    task_actions = task.add_subparsers(dest="task_action", required=True)
+    task_list = task_actions.add_parser("list", help="List open tasks")
+    task_list.add_argument("--all", action="store_true", help="Include completed tasks")
+    task_new = task_actions.add_parser("new", help="Create a task")
+    task_new.add_argument("title")
+    task_new.add_argument("--description", help="What needs doing and why")
+    task_new.add_argument("--criterion", action="append", default=[], help="An acceptance criterion (repeatable)")
+    task_new.add_argument("--related", action="append", default=[], help="Id of a related idea or decision")
+    task_status = task_actions.add_parser("status", help="Set a task's status")
+    task_status.add_argument("task")
+    task_status.add_argument("status", choices=TASK_STATUSES)
+    task_outcome = task_actions.add_parser("outcome", help="Record what an implementation achieved")
+    task_outcome.add_argument("task")
+    task_outcome.add_argument("--outcome", required=True, help="What changed")
+    task_outcome.add_argument("--verified", help="Verification performed")
+    task_outcome.add_argument("--unresolved", help="Issues still open")
+    task_outcome.add_argument("--session", help="The implementation conversation to link")
+    task_outcome.add_argument("--status", choices=TASK_STATUSES, help="Also set the status (never automatic)")
+    for sub in (note_list, note_search, note_show, note_path, note_new, note_rename,
+                task_list, task_new, task_status, task_outcome):
+        sub.add_argument("--project", help=which)
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "project":
+            return project_command(args)
+        if args.command == "note":
+            return note_command(args)
+        if args.command == "task":
+            return task_command(args)
         if args.command == "setup":
             return setup_profile(args)
         if args.command == "key":
@@ -305,6 +496,8 @@ def main(argv=None):
                 return 0
         if args.command != "chat":
             state = State(args.data_dir)
+            if getattr(args, "project", None):
+                state = state.for_project(ProjectRegistry(args.data_dir).find(args.project).id)
             if args.command == "sessions":
                 for session, count in state.sessions():
                     print(f"{session}  {count} turns")
@@ -371,6 +564,30 @@ def main(argv=None):
                     print(skills[args.name]["steps"])
             return 0
 
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        registry, project = chat_project(args, interactive)
+        state = State(args.data_dir)
+        if project is not None:
+            state = state.for_project(project.id)
+            if args.workspace is None:
+                args.workspace = project.path
+            else:
+                inside = normalize_path(args.workspace)
+                root = normalize_path(project.path)
+                if inside != root and not inside.startswith(root.rstrip(os.sep) + os.sep):
+                    raise ValueError(f"--workspace must be the project folder ({project.path}) or inside it.")
+        session_given = args.session is not None
+        if args.session is None:
+            last = project.settings.get("last_session") if project is not None else None
+            args.session = last if isinstance(last, str) and last.strip() else "default"
+        suggested = None
+        if project is not None and args.task:
+            args.session, task, suggested = project_cli.start_implementation(
+                project, state, args.task, args.session if session_given else None)
+        elif project is not None and args.brainstorm:
+            args.session = project_cli.brainstorm_session(state, args.session if session_given else None)
+        if project is not None:
+            registry.update_settings(project.id, last_session=args.session)
         check_name(args.session, "Session")
         if args.all:
             args.learn = args.write = args.shell = args.web = True
@@ -381,9 +598,9 @@ def main(argv=None):
         approve = (lambda changes: True) if args.yes else confirm_changes
         confirm = auto_confirm() if args.yes else confirm_action
         options = {"write": args.write, "shell": args.shell, "web": args.web, "max_rounds": args.max_rounds}
-        state = State(args.data_dir)
         agent = Agent(provider, state, args.workspace, config["context_chars"], approve,
-                      confirm=confirm, image_provider=providers.make_image_provider(config), **options)
+                      confirm=confirm, image_provider=providers.make_image_provider(config),
+                      project_context=ProjectContext(project, state) if project is not None else None, **options)
         if args.prompt is not None:
             from .plain import report_workspace_writes
 
@@ -394,15 +611,16 @@ def main(argv=None):
 
         from . import plain, tui
 
-        interactive = sys.stdin.isatty() and sys.stdout.isatty()
         if interactive and not args.plain and os.environ.get("AGENT_UI", "").lower() != "plain" and tui.available():
             provider.streaming = not args.no_stream
             return tui.run(provider, state, args.data_dir, config, args.session, args.workspace,
-                           args.learn, args.yes, attachments=args.attach, **options)
+                           args.learn, args.yes, attachments=args.attach, project=project,
+                           draft=suggested, **options)
         provider.streaming = False  # The line-based chat prints whole replies.
         return plain.chat_loop(agent, args.session, args.learn, config["model"], printable, agent.approve,
                                (OSError, RuntimeError, ValueError, sqlite3.Error),
-                               tui_hint=interactive and not args.plain and not tui.available(), attachments=args.attach)
+                               tui_hint=interactive and not args.plain and not tui.available(), attachments=args.attach,
+                               project=project, suggested=suggested)
     except EOFError:
         return 0
     except KeyboardInterrupt:

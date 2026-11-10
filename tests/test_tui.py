@@ -675,6 +675,111 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("up")
             self.assertEqual(composer.text, "a\nb")
 
+    async def test_prompt_history_restores_the_unfinished_draft_and_cursor(self):
+        from local_agent.tui.widgets import Composer
+
+        app = self.make(StreamingFake(text("Saved reply")))
+        async with app.run_test(size=(100, 30)) as pilot:
+            await self.send(pilot, app, "Earlier prompt")
+            await self.wait_idle(pilot, app)
+            composer = app.query_one(Composer)
+            composer.load_text("Unfinished draft\nwith a second line")
+            composer.move_cursor((0, 4))
+            selection = composer.selection
+            await pilot.press("up")
+            self.assertEqual(composer.text, "Earlier prompt")
+            await pilot.press("down")
+            self.assertEqual(composer.text, "Unfinished draft\nwith a second line")
+            self.assertEqual(composer.selection, selection)
+            await pilot.press("up")
+            composer.load_text("Replacement draft")
+            await pilot.press("up", "down")
+            self.assertEqual(composer.text, "Replacement draft")
+            self.assertEqual(len(app.provider.requests), 1)
+
+    async def test_send_and_stop_buttons_keep_the_next_draft(self):
+        from local_agent.tui.widgets import Composer
+
+        provider = StreamingFake(text("Late reply"))
+        provider.release.clear()
+        self.addCleanup(provider.release.set)
+        app = self.make(provider)
+        async with app.run_test(size=(80, 24)) as pilot:
+            composer = app.query_one(Composer)
+            self.assertTrue(app.query_one("#send-prompt").disabled)
+            composer.load_text("Slow question")
+            await pilot.pause()
+            await pilot.click("#send-prompt")
+            await pilot.pause()
+            self.assertTrue(app.busy)
+            self.assertIs(app.focused, composer)
+            self.assertTrue(app.query_one("#stop-turn").display)
+            composer.load_text("My next draft")
+            await pilot.pause()
+            await pilot.click("#stop-turn")
+            await pilot.pause()
+            self.assertFalse(app.busy)
+            self.assertEqual(composer.text, "My next draft")
+            self.assertTrue(app.query_one("#restore-prompt").disabled)
+            provider.release.set()
+            await pilot.pause(0.3)
+            self.assertEqual(self.state.sessions(), [])
+            composer.load_text("")
+            await pilot.pause()
+            await pilot.click("#restore-prompt")
+            self.assertEqual(composer.text, "Slow question")
+            self.assertFalse(app.busy)
+            self.assertEqual(len(provider.requests), 1)
+
+    async def test_failed_prompt_can_be_restored_edited_and_sent_with_attachments(self):
+        from local_agent.tui.widgets import Composer
+
+        attachment = self.root / "brief.txt"
+        attachment.write_text("Acceptance brief", encoding="utf-8")
+        provider = StreamingFake(RuntimeError("Temporary failure"), text("Received"))
+        app = self.make(provider, attachments=[attachment])
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.send(pilot, app, "Read the brief")
+            await self.wait_idle(pilot, app)
+            composer = app.query_one(Composer)
+            self.assertTrue(app.query_one("#restore-prompt").display)
+            composer.load_text("Keep this draft")
+            await pilot.pause()
+            app.action_restore_prompt()
+            self.assertEqual(composer.text, "Keep this draft")
+            composer.load_text("")
+            await pilot.pause()
+            await pilot.click("#restore-prompt")
+            self.assertEqual(composer.text, "Read the brief")
+            self.assertIs(app.focused, composer)
+            self.assertEqual(len(provider.requests), 1)  # Restoring never starts another request.
+            self.assertTrue(app.file_commands.pending)
+            await pilot.press("end", "!")
+            await pilot.click("#send-prompt")
+            await self.wait_idle(pilot, app)
+            self.assertFalse(app.file_commands.pending)
+            self.assertFalse(app.query_one("#restore-prompt").display)
+            self.assertIn("Read the brief!", provider.requests[1][0][-1]["content"])
+            self.assertIn("Acceptance brief", provider.requests[1][0][-1]["content"])
+            self.assertEqual(self.state.sessions(), [("s", 1)])
+
+    async def test_recovery_controls_fit_small_terminals_and_clear_on_session_switch(self):
+        app = self.make(StreamingFake(RuntimeError("Temporary failure")))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.send(pilot, app, "Failed question")
+            await self.wait_idle(pilot, app)
+            for width, height in ((80, 24), (50, 12), (120, 40)):
+                await pilot.resize_terminal(width, height)
+                await pilot.pause()
+                for selector in ("#send-prompt", "#restore-prompt", "#copy-reply"):
+                    button = app.query_one(selector)
+                    self.assertTrue(button.is_on_screen, selector)
+                    self.assertLessEqual(button.region.right, width, selector)
+                    self.assertLessEqual(button.region.bottom, height, selector)
+            await app.switch_session("new-session")
+            self.assertFalse(app.query_one("#restore-prompt").display)
+            self.assertFalse(app.busy)
+
     async def test_file_mentions_and_preview(self):
         from local_agent.tui.screens import FilePreview
         from local_agent.tui.widgets import Composer

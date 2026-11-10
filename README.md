@@ -116,6 +116,19 @@ The system monitor stays at the top of the sidebar and refreshes once per second
 | ![Command palette](docs/screenshots/palette.png) | ![Daylight theme and an error card](docs/screenshots/daylight.png) |
 | ![Approving a command](docs/screenshots/action.png) | |
 
+## Projects
+
+Register a folder as a project to keep its conversations, notes, decisions and tasks together, and to follow one workflow: select the project, brainstorm, save ideas, record decisions, create tasks, implement them and record the results.
+
+```powershell
+python -m local_agent project add . --name "My App"
+python -m local_agent chat --project my-app
+```
+
+In the full-screen UI, `f5` switches projects, `f6` opens the project home (overview, open tasks, recent notes and conversations, and actions to chat, brainstorm or create notes), `f7` browses and searches notes, and `f9` saves the latest reply as an idea, note, decision or task after you review it. `/implement <task>` starts a conversation with the task, its acceptance criteria and linked decisions; `/outcome` records what changed, how it was verified and what is unresolved. Tasks are completed only when you say so.
+
+Notes are ordinary Markdown in the project's `.agent-project/` folder, safe to edit in any editor and to commit; edits made outside the app are never overwritten silently. Each request includes the overview when relevant, notes you selected and a few notes that match your words, within a quarter of the context budget, and a **context** line above the reply shows which. Projects are optional: without one, everything works as before. See [docs/PROJECTS.md](docs/PROJECTS.md) for the file format, context rules, commands and keys.
+
 ## Attachments and artifacts
 
 Attach local images or UTF-8 text with repeatable `--attach` options.
@@ -223,12 +236,22 @@ python -m local_agent history demo
 python -m local_agent search "concise replies"
 python -m local_agent todo dev
 python -m local_agent delete-session demo
+python -m local_agent project add . --name "My App"
+python -m local_agent project list
+python -m local_agent project show my-app
+python -m local_agent note new idea "Offline mode" --project my-app
+python -m local_agent note search offline --project my-app
+python -m local_agent task new "Add CSV export" --criterion "Header row" --project my-app
+python -m local_agent task outcome add-csv-export --outcome "Export works" --verified "Ran the tests" --project my-app
+python -m local_agent chat --project my-app --task add-csv-export
 ```
+
+`project`, `note` and `task` manage projects and their Markdown notes; `sessions`, `history`, `search`, `todo` and `delete-session` take `--project NAME` for a project's conversations.
 
 - `--learn` enables changes to memories and skills. Before saving, the CLI lists the pending changes and asks for confirmation. Declined changes are discarded, and the saved reply and tool results note that they were not saved. The model receives saved memories and a list of skill descriptions on each turn. It can request the full text of a relevant skill by name.
 - `--max-rounds N` sets how many tool rounds a turn may use, from 1 to 50 (default 6). Multi-step coding tasks with `--write --shell` usually need more, for example `--max-rounds 20`. After the last round, the model is asked for a text answer with no tools available.
 - Choose a workspace whose contents you are comfortable sharing with the configured provider. Chat history, memories and tool results are included in model requests as needed.
-- State lives in `.agent/state.sqlite3`. Use `python -m local_agent --data-dir <directory> chat` for a separate history, memory and skill library. The database is versioned: older data directories are upgraded in place when opened, and a directory written by a newer version is refused rather than damaged.
+- State lives in `.agent/state.sqlite3`. Use `python -m local_agent --data-dir <directory> chat` for a separate history, memory and skill library. The database is versioned: older data directories are upgraded in place when opened, and a directory written by a newer version is refused rather than damaged. Version 4 adds project scopes; existing conversations become the classic, project-less scope. The registered project list is `.agent/projects.json`.
 
 ## MVP behavior
 
@@ -275,8 +298,9 @@ Automated regression checks cover:
 - **Providers:** missing tool-call IDs, argument validation, and provider response parsing.
 - **Storage:** schema upgrades, persistence, rollback, stale session writes, skill storage and store limits.
 - **Approval and limits:** disabled learning, change approval, declined-change history, and tool limits.
-- **Command line:** the memory, skill, search, todo and session commands.
-- **Terminal UI:** streaming, tool rows, the approval and action dialogs, dangerous-command focus, cancellation, errors, commands, autocomplete, file previews, resizing and resumed history.
+- **Command line:** the memory, skill, search, todo and session commands, and the project, note and task commands.
+- **Projects:** registration and normalized-path duplicates, missing and moved folders, the schema 3 to 4 upgrade (including a failed upgrade), isolation of conversations, task lists, search and artifacts, Markdown round trips, external-edit conflicts, links and search, context selection and budgets, brainstorm drafts, idea-to-task conversion, implementation handoff and outcomes.
+- **Terminal UI:** streaming, tool rows, the approval and action dialogs, dangerous-command focus, cancellation, errors, commands, autocomplete, file previews, resizing and resumed history; for projects, the switcher, home, notes browser and editor, per-project drafts and attachments, switching during a turn, context-source lines, review before saving, conflict handling, task handoff and outcomes, and layouts at several terminal sizes.
 - **Streaming:** against a local HTTP endpoint.
 
 ## Design and scope

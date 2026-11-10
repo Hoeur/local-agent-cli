@@ -163,7 +163,7 @@ Screen {
     margin: 0 2;
 }
 /* Flat buttons draw block borders three rows tall; these sit on one row so the label shows. */
-#copy-reply, .assistant .copy-code {
+#copy-tools Button, .assistant .copy-code {
     height: 1;
     width: auto;
     min-width: 0;
@@ -322,9 +322,18 @@ Welcome {
 #copy-tools {
     height: 1;
 }
+#copy-tools Button {
+    margin-right: 1;
+}
+#stop-turn, #restore-prompt {
+    display: none;
+}
 #copy-hint {
     width: 1fr;
-    margin-left: 2;
+    min-width: 0;
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
     color: $muted-color;
 }
 #attachment-bar {
@@ -449,6 +458,173 @@ CommandPalette > Vertical {
     border: round $primary;
 }
 
+/* ── Projects: switcher, home, notes, editor ─────────── */
+
+#project-info {
+    color: $foreground;
+}
+.context-sources {
+    color: $muted-color;
+    margin: 0 0 0 2;
+}
+#save-reply {
+    display: none;
+}
+ProjectsScreen, ProjectHome, NotesScreen, NoteEditor {
+    background: $background;
+    padding: 0 1;
+}
+.screen-title {
+    height: 2;
+    padding: 1 1 0 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+.screen-keys {
+    dock: bottom;
+    height: auto;
+    max-height: 2;
+    padding: 0 1;
+    background: $surface;
+}
+.screen-list {
+    background: $surface;
+    border: round $panel;
+    height: 1fr;
+    padding: 0 1;
+}
+.screen-list:focus {
+    border: round $primary;
+}
+.screen-list > .option-list--option-highlighted {
+    background: $primary 22%;
+}
+.screen-detail {
+    height: auto;
+    padding: 0 1 1 1;
+}
+#home-actions {
+    height: 1;
+    margin: 0 1 1 1;
+}
+#home-actions Button {
+    height: 1;
+    width: auto;
+    min-width: 0;
+    border: none;
+    padding: 0 1;
+    margin-right: 1;
+}
+#home-scroll {
+    height: 1fr;
+}
+#home-columns {
+    height: auto;
+}
+.home-column {
+    width: 1fr;
+    height: auto;
+    padding: 0 1;
+}
+.home-heading {
+    height: 1;
+    margin-top: 1;
+}
+#home-overview {
+    background: $surface;
+    height: auto;
+    max-height: 16;
+    padding: 0 1;
+    margin: 0;
+}
+.home-list {
+    background: $surface;
+    border: none;
+    height: auto;
+    max-height: 12;
+    padding: 0 1;
+}
+.home-list:focus {
+    background: $primary 8%;
+}
+.home-list > .option-list--option-highlighted {
+    background: $primary 22%;
+}
+ProjectHome.-narrow #home-columns {
+    layout: vertical;
+}
+#notes-filters {
+    height: 1;
+    padding: 0 1;
+}
+#notes-search {
+    margin: 0 1;
+    height: 3;
+}
+#notes-body {
+    height: 1fr;
+}
+#notes-list {
+    width: 46;
+    max-width: 45%;
+}
+#notes-preview {
+    width: 1fr;
+    background: $surface;
+    border: round $panel;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+#notes-preview Markdown {
+    background: transparent;
+    margin: 0;
+}
+NotesScreen.-narrow #notes-preview {
+    display: none;
+}
+NotesScreen.-narrow #notes-list {
+    width: 1fr;
+    max-width: 100%;
+}
+#editor-meta {
+    height: 3;
+}
+#editor-name {
+    width: 1fr;
+}
+#editor-status {
+    width: 22;
+}
+#editor-body {
+    height: 1fr;
+    border: round $panel;
+}
+#editor-body:focus {
+    border: round $primary;
+}
+.dialog.confirm, .dialog.prompt {
+    max-width: 80;
+}
+.dialog.outcome {
+    max-width: 100;
+}
+.outcome-field {
+    height: 5;
+}
+.field-label {
+    height: 1;
+    margin-top: 1;
+}
+.field-note {
+    margin-top: 1;
+}
+.choice-buttons Button {
+    min-width: 10;
+}
+.note-view Markdown {
+    background: transparent;
+}
+
 /* ── Small terminals ────────────────────────────────── */
 
 Screen.-tiny #chat {
@@ -466,4 +642,22 @@ Screen.-tiny .dialog {
 }
 Screen.-narrow .user {
     margin-right: 2;
+}
+ProjectHome.-narrow #home-actions {
+    display: none;
+}
+ProjectsScreen.-narrow .screen-title, NotesScreen.-narrow .screen-title, ProjectHome.-narrow .screen-title {
+    height: 1;
+    padding: 0 1;
+}
+ProjectsScreen.-narrow .screen-keys, NotesScreen.-narrow .screen-keys, ProjectHome.-narrow .screen-keys {
+    max-height: 3;
+}
+ChoiceScreen.-narrow .choice-buttons {
+    layout: vertical;
+    align-horizontal: left;
+}
+ChoiceScreen.-narrow .choice-buttons Button {
+    margin: 0;
+    width: 100%;
 }
