@@ -17,10 +17,10 @@ ollama pull qwen3:0.6b
 Install Local Agent with the terminal UI from the [latest release](https://github.com/Hoeur/local-agent-cli/releases/latest):
 
 ```powershell
-python -m pip install "local-agent-cli[tui] @ https://github.com/Hoeur/local-agent-cli/releases/download/v0.3.2/local_agent_cli-0.3.2-py3-none-any.whl"
+python -m pip install "local-agent-cli[tui] @ https://github.com/Hoeur/local-agent-cli/releases/download/v0.3.3/local_agent_cli-0.3.3-py3-none-any.whl"
 ```
 
-If you downloaded the wheel, install the file with `python -m pip install "local_agent_cli-0.3.2-py3-none-any.whl[tui]"` from the folder that holds it. Then open the project folder you want to work in, save the model setting, check it, and start a session there. Settings, sessions and task lists are kept in that folder's `.agent` directory.
+If you downloaded the wheel, install the file with `python -m pip install "local_agent_cli-0.3.3-py3-none-any.whl[tui]"` from the folder that holds it. Then open the project folder you want to work in, save the model setting, check it, and start a session there. Settings, sessions and task lists are kept in that folder's `.agent` directory.
 
 ```powershell
 local-agent setup --model qwen3:0.6b
@@ -49,7 +49,7 @@ To build and install a wheel from this checkout:
 ```powershell
 python -m pip install build
 python -m build --wheel
-python -m pip install "dist/local_agent_cli-0.3.2-py3-none-any.whl[tui]"
+python -m pip install "dist/local_agent_cli-0.3.3-py3-none-any.whl[tui]"
 ```
 
 ![Local Agent terminal UI](docs/screenshots/welcome.png)
