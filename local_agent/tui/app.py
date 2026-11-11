@@ -35,11 +35,14 @@ from ..config import load_config, read_settings, save_config, set_active
 from ..file_commands import FILE_COMMANDS, FileCommands
 from ..projects import KINDS, NoteConflict, ProjectContext, ProjectError, ProjectRegistry, draft_from_reply
 from ..projects import record_outcome as record_task_outcome
+from ..orchestrator import RunStore, TeamRun, preflight, result_text
+from ..teams import TeamStore
 from . import clipboard, commands, effects, hologram
 from .holoview import HoloHud, HoloPanel, ViewControl, make_view
 from .project_screens import (ChoiceScreen, ConfirmScreen, NoteEditor, NotesScreen, OutcomeScreen, ProjectHome,
                               ProjectsScreen)
 from .screens import ActionScreen, ApprovalScreen, FilePreview, HelpScreen
+from .team_screens import TeamRunPanel, TeamScreen
 from .theme import (DEFAULT_PREFS, HOLOGRAM_WIDTHS, MOTION_FPS, MOTION_LEVELS, PALETTES, TEXTUAL_LEVEL, detect_glyphs,
                     detect_motion, save_prefs)
 from .widgets import (ArtifactCard, AssistantMessage, AttachmentBar, ChatLog, Composer, ErrorCard, NoteCard, Sidebar, StatusBar, Suggestions,
@@ -131,6 +134,14 @@ class AgentEvent(Message):
         self.token, self.kind, self.data = token, kind, data
 
 
+class TeamEvent(Message):
+    """Something a team run reported, posted from its threads to the UI thread."""
+
+    def __init__(self, kind, data):
+        super().__init__()
+        self.kind, self.data = kind, data
+
+
 class TurnFinished(Message):
     def __init__(self, token, content, error):
         super().__init__()
@@ -217,6 +228,7 @@ class AgentApp(App):
         Binding("f5", "projects", "Projects", priority=True),
         Binding("f6", "project_home", "Project home", priority=True),
         Binding("f7", "notes", "Notes", priority=True),
+        Binding("f8", "teams", "Teams", priority=True),
         Binding("f9", "save_reply", "Save reply to project", priority=True),
         Binding("alt+left", "rotate_hologram(-0.25, 0)", "Rotate", priority=True, show=False),
         Binding("alt+right", "rotate_hologram(0.25, 0)", "Rotate", priority=True, show=False),
@@ -244,6 +256,13 @@ class AgentApp(App):
         self.base_state = state
         self.classic_workspace = workspace.resolve() if workspace is not None and project is None else None
         self.launch_flags = {"write": write, "shell": shell, "web": web}
+        # Team mode: None is the usual single agent. A running team run blocks new turns like a turn does.
+        self.team_mode = None
+        self.team_run = None
+        self.team_approval_mount = None
+        self.team_panel = None
+        self.team_prompt = ""
+        self.team_provider_factory = None  # Tests swap in scripted models; None builds real providers.
         self.file_commands = FileCommands(state, attachments)
         environ = os.environ if environ is None else environ
         self.environ = environ
@@ -314,7 +333,7 @@ class AgentApp(App):
 
     @property
     def busy(self):
-        return self.token is not None
+        return self.token is not None or self.team_run is not None
 
     # ── Layout ────────────────────────────────────────────────────────────────────────────
 
@@ -366,6 +385,7 @@ class AgentApp(App):
                             "compare tradeoffs, list open questions and suggest next steps. Press **f9** to save "
                             "an idea, note, decision or task from a reply; you edit it before it is saved.",
                             "Brainstorm")
+        self.load_team_mode()
         if self.initial_draft:
             composer = self.query_one(Composer)
             composer.load_text(self.initial_draft)
@@ -711,6 +731,12 @@ class AgentApp(App):
             return {name: ["tasks", "decisions", "ideas", "notes", "overview"]}
         if name == "context":
             return {name: ["add", "remove", "clear"]}
+        if name == "team":
+            try:
+                names = list(TeamStore(self.data_dir, self.project.id).teams()) if self.project else []
+            except ProjectError:
+                names = []
+            return {name: [*names, "off", "runs", "result", "run"]}
         if self.project is None or name not in {"note", "implement", "outcome"}:
             return {}
         try:
@@ -739,11 +765,15 @@ class AgentApp(App):
         save = self.query_one("#save-reply", Button)
         save.display = self.project is not None
         save.disabled = not self.last_reply
-        if self.busy:
+        if self.team_run is not None:
+            hint = "Team working · draft your next message · Esc stop"
+        elif self.busy:
             hint = "Working · draft your next message · Esc stop"
         elif self.recoverable_prompt:
             hint = ("Clear draft to restore previous prompt" if composer.text else
                     "Restore to edit · completed actions may remain")
+        elif self.team_mode and self.project is not None:
+            hint = f"Enter starts team {self.team_mode} · /team off for one agent"
         else:
             hint = "Enter send · Ctrl+J newline"
         self.query_one("#copy-hint", Static).update(hint)
@@ -845,6 +875,9 @@ class AgentApp(App):
             return
         if len(text) > self.config["context_chars"]:
             self.notify(f"Prompts can be at most {self.config['context_chars']:,} characters.", severity="error")
+            return
+        if self.team_mode and self.project is not None:
+            self.confirm_team_run(self.team_mode, text, clear=True)
             return
         composer.load_text("")
         self.hide_suggestions()
@@ -996,7 +1029,7 @@ class AgentApp(App):
             await self.model_command(argument)
         elif name == "copy":
             self.action_copy_reply()
-        elif name in project_commands.PROJECT_COMMANDS or name == "create":
+        elif name in project_commands.PROJECT_COMMANDS or name in {"create", "team"}:
             await self.project_slash(name, argument)
         chat.anchor()
 
@@ -1021,6 +1054,9 @@ class AgentApp(App):
             return
         if self.project is None:
             self.notify("Open a project first: f5, or /project NAME.", severity="warning", timeout=4)
+            return
+        if name == "team":
+            await self.team_command(argument)
             return
         if name in {"notes", "tasks", "decisions"}:
             kind = {"tasks": "task", "decisions": "decision"}.get(name)
@@ -1223,6 +1259,7 @@ class AgentApp(App):
         self.refresh_project_labels()
         while len(self.screen_stack) > 1:
             self.pop_screen()
+        self.load_team_mode()
         await self.load_session()
         await self.refresh_attachments()
         self.refresh_sidebar()
@@ -1398,6 +1435,229 @@ class AgentApp(App):
         line.append_text(Text(" · ", Style(color=palette["muted"])).join(parts))
         line.append("   /context for details", Style(color=palette["muted"], italic=True))
         return NoteCard(line, "context-sources")
+
+    # ── Teams ─────────────────────────────────────────────────────────────────────────────
+
+    def load_team_mode(self):
+        mode = self.project.settings.get("team_mode") if self.project is not None else None
+        self.team_mode = mode if isinstance(mode, str) and mode else None
+        self.show_team_mode()
+
+    def show_team_mode(self):
+        self.query_one(StatusBar).team = self.team_mode or ""
+        self.query_one(Composer).placeholder = (
+            f"Team {self.team_mode}: describe the task  ·  /team off for one agent" if self.team_mode else
+            "Ask anything  ·  / commands  ·  @ files" if self.workspace is not None else "Ask anything  ·  / for commands")
+        self.refresh_composer_controls()
+
+    def set_team_mode(self, name):
+        if self.project is None:
+            self.notify("Teams belong to a project. Open one with f5.", severity="warning")
+            return
+        if name is not None:
+            try:
+                TeamStore(self.data_dir, self.project.id).get(name)
+            except ProjectError as error:
+                self.notify(clean(str(error)), severity="error", timeout=5)
+                return
+        self.team_mode = name
+        try:
+            self.project = self.registry.update_settings(self.project.id, team_mode=name or "")
+        except (OSError, ProjectError):
+            pass
+        self.show_team_mode()
+        self.notify(f"Messages start a team run with {name}. Each run is checked first." if name else
+                    "Messages go to one agent, as before.", title=f"Team {name}" if name else "Single agent", timeout=3)
+
+    def action_teams(self):
+        if self.project is None:
+            self.notify("Teams belong to a project. Open one with f5.", severity="warning", timeout=3)
+        elif not isinstance(self.screen, TeamScreen):
+            self.push_screen(TeamScreen())
+
+    async def team_command(self, argument):
+        word, _, rest = argument.partition(" ")
+        if not word:
+            self.action_teams()
+        elif word in {"off", "single", "none"}:
+            self.set_team_mode(None)
+        elif word == "runs":
+            runs = RunStore(self.data_dir, self.project.id).runs(10)
+            rows = [f"- `{record['id']}` **{record['state']}** · {clean(record['team'].get('name', '?'))} · "
+                    f"{clean(record['prompt'])[:70]}" for record in runs]
+            await self.note("\n".join(rows) or "_No team runs yet._", "Team runs")
+        elif word == "result":
+            try:
+                record = RunStore(self.data_dir, self.project.id).load(rest.strip() or "")
+            except ProjectError as error:
+                self.notify(clean(str(error)), severity="error", timeout=5)
+                return
+            await self.note(f"```text\n{clean(result_text(record))}\n```", f"Team run {record['id']}")
+        elif word == "run":
+            if not self.team_mode or not rest.strip():
+                self.notify("Usage: /team run <request> (choose a team first with /team NAME)", severity="warning")
+            else:
+                self.confirm_team_run(self.team_mode, rest.strip())
+        else:
+            self.set_team_mode(word)
+
+    def confirm_team_run(self, name, prompt, task=None, clear=False):
+        """Check the team, then show the preflight summary; the run starts only when the user agrees."""
+        if self.busy:
+            self.notify("Wait for the current turn or run, or press esc to cancel it.", severity="warning")
+            return
+        try:
+            team = TeamStore(self.data_dir, self.project.id).get(name)
+            ok, report, _ = preflight(team, self.data_dir, self.project)
+        except (OSError, ProjectError) as error:
+            self.notify(clean(str(error)), severity="error", timeout=6)
+            return
+        if not ok:
+            self.run_worker(self.note(f"```text\n{clean(report)}\n```\nFix these in the team screen (f8) or with "
+                                      "`python -m local_agent team assign`. Single-agent chat still works: "
+                                      "`/team off`.", f"Team {name} can't run"))
+            self.notify(f"Team {name} can't run yet; see the problems in the conversation.", severity="error",
+                        timeout=5)
+            return
+
+        async def decided(start):
+            if start:
+                if clear:
+                    self.query_one(Composer).load_text("")
+                    self.hide_suggestions()
+                await self.start_team_run(team, prompt, task)
+        self.push_screen(ConfirmScreen(f"Start team {name}?", report + "\n\nRequest: " + prompt
+                                       + ("\nTask: " + task if task else ""),
+                                       "Start team run", "Cancel"), decided)
+
+    async def start_team_run(self, team, prompt, task=None):
+        if self.busy or self.project is None:
+            return
+        try:
+            run = TeamRun(self.project, self.base_state, self.data_dir, team, prompt, task=task, session=self.session,
+                          selected=self.state.conversation(self.session)["notes"], approve=self.team_approval,
+                          auto_approve=self.auto_approve, on_event=self.team_event,
+                          **({"provider_factory": self.team_provider_factory} if self.team_provider_factory else {}))
+        except (OSError, ProjectError) as error:
+            self.notify(clean(str(error)), severity="error", timeout=6)
+            return
+        await self.hide_welcome()
+        chat = self.query_one(ChatLog)
+        await chat.mount(UserMessage(f"[team {team.get('name')}] {prompt}", stamp()))
+        self.team_panel = TeamRunPanel(run.id, team.get("name"))
+        await chat.mount(self.team_panel)
+        await self.team_panel.update_snapshot(run.snapshot())
+        chat.anchor()
+        self.team_run, self.team_prompt = run, prompt
+        self.recoverable_prompt = ""
+        self.set_state("thinking", f"team {team.get('name')}")
+        threading.Thread(target=run.run, name="team-run", daemon=True).start()
+
+    def team_event(self, kind, data):
+        """Runs on team threads; the UI thread decides whether the event is still current."""
+        self.post_message(TeamEvent(kind, data))
+
+    def team_approval(self, request, stop):
+        """Runs on an agent's thread. The orchestrator sends one request at a time; this waits for the
+        dialog and gives up (declining) as soon as the run is stopped."""
+        decided = threading.Event()
+        result = {}
+
+        def done(value):
+            result["value"] = bool(value)
+            decided.set()
+        self.post_message(TeamEvent("approval", {"run": request["run"], "project": request["project_id"],
+                                                 "request": request, "done": done}))
+        while not decided.wait(0.1):
+            if stop.is_set():
+                return False
+        return result.get("value", False) and not stop.is_set()
+
+    def team_event_current(self, data):
+        run = self.team_run
+        return run is not None and data.get("run") == run.id and data.get("project") == self.project_key
+
+    async def on_team_event(self, event: TeamEvent):
+        data = event.data
+        if not self.team_event_current(data):
+            if event.kind == "approval":
+                data["done"](False)  # A late request from a cancelled run or another project.
+            return
+        if event.kind == "update":
+            if self.team_panel is not None:
+                await self.team_panel.update_snapshot(data)
+            state = data["state"]
+            running = [agent["id"] for agent in data["agents"] if agent["state"] in {"running", "waiting_approval"}]
+            self.set_state("approval" if state == "waiting_approval" else "tool" if running else "thinking",
+                           f"team · {', '.join(running)}" if running else "team")
+        elif event.kind == "note":
+            text = data["text"]
+            if text.startswith(("Fallback", "Limit", "Integration")):
+                self.notify(clean(text)[:200], title="Team run", severity="warning", timeout=6)
+        elif event.kind == "approval":
+            request = data["request"]
+            self.set_state("approval", f"{request['agent']} · {request['tool'].replace('_', ' ')}")
+            if self.team_run.stop.is_set():
+                data["done"](False)
+                return
+            self.team_approval_mount = self.push_screen(ActionScreen(request), data["done"])
+        elif event.kind == "done":
+            await self.finish_team_run(data)
+
+    async def close_team_approval(self, run):
+        dialog = self.screen
+        if isinstance(dialog, ActionScreen) and dialog.action.get("run") == run.id:
+            await self.team_approval_mount
+            if self.screen is dialog:
+                dialog.dismiss(False)
+        self.team_approval_mount = None
+
+    async def finish_team_run(self, record):
+        run = self.team_run
+        await self.close_team_approval(run)
+        chat = self.query_one(ChatLog)
+        if self.team_panel is not None:
+            await self.team_panel.update_snapshot(run.snapshot())
+        markdown = run.markdown()
+        reply = AssistantMessage(when=stamp(), live=False)
+        await chat.mount(reply)
+        await reply.set_content(markdown)
+        await reply.finish(f"team run {record['id']}")
+        self.last_reply = markdown
+        self.team_run = None
+        state = record["state"]
+        if state == "completed":
+            self.holo.flash("success")
+            self.set_state("idle", "")
+        else:
+            self.recoverable_prompt = self.team_prompt
+            self.holo.flash("error")
+            self.set_state("error" if state == "failed" else "cancelled", f"team {state}")
+        if record.get("outcome"):
+            self.notify(clean(record["outcome"]), title="Task", timeout=4)
+        self.team_panel = None
+        self.refresh_sidebar()
+        self.refresh_composer_controls()
+        chat.anchor()
+
+    async def cancel_team_run(self):
+        run = self.team_run
+        if run is None:
+            return
+        run.cancel()
+        self.team_run = None  # From here on, the run's late events are ignored.
+        self.recoverable_prompt = self.team_prompt
+        await self.close_team_approval(run)
+        if self.team_panel is not None:
+            await self.team_panel.update_snapshot({**run.snapshot(), "state": "cancelled"})
+            self.team_panel = None
+        chat = self.query_one(ChatLog)
+        await chat.mount(NoteCard(divider("team run cancelled · no new work starts · completed file changes and "
+                                          "commands stay · the record is kept", self), "divider"))
+        self.set_state("cancelled", "")
+        self.refresh_tools()
+        chat.anchor()
+        self.notify("Team run cancelled.", severity="warning", timeout=2)
 
     # ── Attachments and artifacts ─────────────────────────────────────────────────────────
 
@@ -1822,6 +2082,9 @@ class AgentApp(App):
         chat.anchor()
 
     async def cancel_turn(self):
+        if self.team_run is not None:
+            await self.cancel_team_run()
+            return
         token, reply = self.token, self.current
         if token is None:
             return
@@ -2207,6 +2470,9 @@ class AgentApp(App):
 
     def stop_turn(self):
         """Cancel a running turn without waiting for it, so nothing from it is saved."""
+        if self.team_run is not None:
+            self.team_run.cancel("The app was closed.")
+            self.team_run = None
         if self.token is not None:
             self.token.cancelled = True
             self.token = self.current = None

@@ -661,3 +661,68 @@ ChoiceScreen.-narrow .choice-buttons Button {
     margin: 0;
     width: 100%;
 }
+
+/* ── Teams ─────────────────────────────────────────── */
+
+TeamScreen {
+    background: $background;
+    padding: 0 1;
+}
+#team-body {
+    height: 1fr;
+}
+#team-lists {
+    width: 44;
+    max-width: 45%;
+}
+#team-list {
+    height: 1fr;
+}
+#team-agents {
+    height: 1fr;
+}
+#team-detail {
+    width: 1fr;
+    background: $surface;
+    border: round $panel;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+TeamScreen.-narrow #team-body {
+    layout: vertical;
+}
+TeamScreen.-narrow #team-lists {
+    width: 100%;
+    max-width: 100%;
+    height: 8;
+}
+TeamScreen.-narrow #team-lists {
+    layout: horizontal;
+}
+TeamScreen.-narrow .screen-keys {
+    max-height: 3;
+}
+.team-run {
+    border-left: outer $secondary 60%;
+    padding: 0 0 0 1;
+}
+.team-run-header, .team-run-subtasks {
+    height: auto;
+}
+.team-run Collapsible {
+    background: transparent;
+    border-top: none;
+    padding: 0;
+    margin: 0;
+}
+.team-run CollapsibleTitle {
+    padding: 0 1;
+    color: $foreground;
+}
+.team-run CollapsibleTitle:focus {
+    background: $primary 30%;
+}
+.team-agent-output {
+    color: $muted-color;
+    padding: 0 0 0 2;
+}

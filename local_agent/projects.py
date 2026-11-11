@@ -1006,7 +1006,7 @@ def todo_from_criteria(task):
     return [f"[{'x' if done else ' '}] {text[:200]}" for done, text in task.criteria()][:30]
 
 
-def record_outcome(knowledge, task, outcome, verification="", unresolved="", session=None, status=None):
+def record_outcome(knowledge, task, outcome, verification="", unresolved="", session=None, status=None, extra=()):
     """Add a dated outcome entry to a task. The status changes only to what the user chose."""
     if task.kind != "task":
         raise ProjectError(f"{task.id} is not a task.")
@@ -1017,6 +1017,7 @@ def record_outcome(knowledge, task, outcome, verification="", unresolved="", ses
     entry = [heading, "", f"**Outcome:** {outcome}"]
     entry.append(f"**Verification:** {verification.strip() or 'none recorded'}")
     entry.append(f"**Unresolved:** {unresolved.strip() or 'none recorded'}")
+    entry += list(extra)
     previous = task.section("Outcome").replace(NO_OUTCOME, "").strip()
     task.body = set_section(task.body, "Outcome", (previous + "\n\n" if previous else "") + "\n".join(entry))
     if session and session not in task.conversations:

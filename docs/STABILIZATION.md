@@ -1,6 +1,21 @@
 # Stabilization results
 
-Verification date: 2026-11-10 (Asia/Bangkok).
+Verification updated 2026-11-11 (Asia/Bangkok).
+
+## Agent teams (unreleased)
+
+Work on top of commit `13a3d08`: team presets, the orchestrator, per-agent providers and permissions, approvals, limits, cancellation, run records, task outcomes, parallel writers in Git worktrees, the `team` command and team mode in the terminal UI ([TEAMS.md](TEAMS.md)). Initial checks used a Linux sandbox with Python 3.10, Textual 8.2.8 and Git 2.34.
+
+| Check | Result | Evidence or limit |
+|---|---|---|
+| Full regression suite | PASS (sandbox) | 255 tests in two runs (the suite is longer than one sandbox command allows): no failures; two optional image-renderer checks skipped. `test_docs` and `test_release` ran with a sandbox-only `tomllib` stand-in because Python 3.10 lacks it; rerun on Python 3.11+. |
+| Full Windows suite and installed wheel | PASS | Python 3.11.9 and Textual 8.2.8 ran 262 tests, with 260 passing and two optional image-renderer checks skipped. Wheel manifest validation and the installed-wheel coding workflow also passed. |
+| Team orchestration tests | PASS (simulated) | 25 tests in `tests/test_teams.py` with scripted models: routing, separate provider objects, permissions, context isolation, dependencies, concurrency and local limits, request budget, attributed and serialized approvals, cancellation during streaming, a running command and an approval, interrupted runs, fallback, provider failure, bounded revisions, invalid and unstructured output, task outcomes, Git worktree isolation, conflicts, integration and apply. Repeated three times without a failure. |
+| Team UI tests | PASS (headless) | 6 tests in `tests/test_tui_teams.py`. |
+| Headless previews | PASS (headless only) | Teams screen, preflight, attributed approval, run panel and final result rendered as text at 120 × 40 and 80 × 24 and inspected. |
+| Live providers | NOT RUN | No model server or API key was reachable from the sandbox. Run the same-model and mixed-model commands in [TEAMS.md](TEAMS.md#quick-start) with `team check --online` first. Small local models may not call the structured tools reliably. |
+| Windows review regressions | PASS | Python 3.11.9 and Git 2.48.1 ran the 32 team orchestration tests with temporary projects, including worktree paths with spaces, ignored-file collisions during apply, fallback after a command, usage estimates and cancellation. A Windows terminal input check accepted a typed approval. |
+| Windows native UI | PENDING | The full-screen team interface still needs visual acceptance in Windows Terminal. |
 
 ## Project workspace (unreleased)
 

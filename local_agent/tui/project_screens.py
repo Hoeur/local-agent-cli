@@ -599,7 +599,8 @@ def note_markdown(app, note, knowledge):
 
 
 NOTE_KEYS = [("enter", "open"), ("e", "edit"), ("n", "new"), ("r", "rename"), ("c", "use in chat"),
-             ("x", "convert"), ("i", "implement"), ("o", "outcome"), ("s", "status"), ("l", "locate"),
+             ("x", "convert"), ("i", "implement"), ("g", "team implement"), ("o", "outcome"), ("s", "status"),
+             ("l", "locate"),
              ("/", "search"), ("tab", "filter"), ("esc", "back")]
 
 
@@ -649,6 +650,15 @@ class NoteActions:
                 app.notify("Only tasks can be implemented. Convert this note to a task with x.", timeout=3)
                 return
             app.run_worker(app.start_implementation(note.id), exclusive=True, group="project")
+        elif action == "team":
+            if note.kind != "task":
+                app.notify("Team implementation runs start from tasks.", timeout=3)
+                return
+            from ..projects import handoff_prompt
+            mode = app.team_mode or "implement"
+            while len(app.screen_stack) > 1:
+                app.pop_screen()
+            app.confirm_team_run(mode, handoff_prompt(note), task=note.id)
         elif action == "outcome":
             if note.kind != "task":
                 app.notify("Outcomes are recorded on tasks.", timeout=3)
@@ -694,8 +704,8 @@ class NoteActions:
 class NotesScreen(Narrow, NoteActions, Screen):
     """Browse, filter and search the project's notes, ideas, decisions and tasks."""
     ACTIONS = (("e", "edit", "Edit"), ("r", "rename", "Rename"), ("c", "context", "Context"),
-               ("x", "convert", "Convert"), ("i", "implement", "Implement"), ("o", "outcome", "Outcome"),
-               ("s", "status", "Status"), ("l", "locate", "Locate"))
+               ("x", "convert", "Convert"), ("i", "implement", "Implement"), ("g", "team", "Team"),
+               ("o", "outcome", "Outcome"), ("s", "status", "Status"), ("l", "locate", "Locate"))
     BINDINGS = [Binding("escape", "back", "Back"), Binding("slash", "search", "Search"),
                 Binding("tab", "next_filter", "Filter"), Binding("shift+tab", "previous_filter", "Filter"),
                 Binding("n", "new", "New"),

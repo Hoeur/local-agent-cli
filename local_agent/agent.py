@@ -59,7 +59,8 @@ class Agent:
     def __init__(self, provider, state, workspace: Path | None = None,
                  context_chars: int = DEFAULT_CONTEXT_CHARS, approve=None, on_event=None, *,
                  confirm=None, write=False, shell=False, web=False, max_rounds=MAX_TOOL_ROUNDS,
-                 allow_private_web=False, image_provider=None, search=None, project_context=None):
+                 allow_private_web=False, image_provider=None, search=None, project_context=None,
+                 allowed_tools=None, extra_tools=None, guidance=()):
         self.provider = provider
         self.image_provider = image_provider
         # on_event(kind, data) lets a user interface follow a turn without changing it:
@@ -89,6 +90,12 @@ class Agent:
         # project_context(session, prompt, budget, first_turn) -> {"payload", "sources", "guidance"}
         # adds project notes to saved context (see projects.ProjectContext). None outside projects.
         self.project_context = project_context
+        # Team agents (see orchestrator.py) get a fixed allow-list of standard tools, enforced here, plus
+        # structured tools of their own: {name: {"description", "parameters", "handler"}}. A handler
+        # receives the arguments as a dict and validates them itself. guidance adds role instructions.
+        self.allowed_tools = None if allowed_tools is None else frozenset(allowed_tools)
+        self.extra_tools = dict(extra_tools or {})
+        self.guidance = list(guidance)
 
     def budget_error(self, subject):
         return (
@@ -110,8 +117,11 @@ class Agent:
     def tool_names(self, learn=False):
         if not self.max_rounds:
             return []
-        return tool_names(learn, self.files is not None, self.write, self.shell, self.web,
-                          self.image_provider is not None)
+        names = tool_names(learn, self.files is not None, self.write, self.shell, self.web,
+                           self.image_provider is not None)
+        if self.allowed_tools is not None:
+            names = [name for name in names if name in self.allowed_tools]
+        return names + [name for name in self.extra_tools if name not in names]
 
     def system_prompt(self, names, context, guidance=()):
         if not names:
@@ -140,11 +150,11 @@ class Agent:
                          "to find text. Files for the user's project belong in the workspace, never in "
                          "create_artifact: artifacts are saved outside the workspace, so use create_artifact "
                          "only when the user asks for an artifact.")
-            if not self.write:
+            if not self.write and self.allowed_tools is None:
                 lines.append("Editing workspace files is switched off. When the user asks to create or change "
                              "a file, don't use create_artifact; tell them to type /write on (or restart with "
                              "--write) and then you can make the change.")
-            if not self.shell:
+            if not self.shell and self.allowed_tools is None:
                 lines.append("Running commands is switched off. When the user asks to run something, tell "
                              "them to type /shell on (or restart with --shell).")
         if self.write:
@@ -257,13 +267,18 @@ class Agent:
             ),
             "web_extract": lambda url: toolkit.web_extract(url, self.output_chars, self.allow_private_web),
         }
+        for name, extra in self.extra_tools.items():
+            handlers[name] = extra["handler"]
         names = self.tool_names(learn)
         available = {name: handlers[name] for name in names}
-        schemas = [{"type": "function", "function": {"name": name, **TOOLS[name]}} for name in names]
+        schemas = [{"type": "function", "function": {"name": name, **TOOLS[name]}} if name in TOOLS else
+                   {"type": "function", "function": {"name": name, "description": self.extra_tools[name]["description"],
+                                                     "parameters": self.extra_tools[name]["parameters"]}}
+                   for name in names]
         context = {"memory": memory, "skills": {key: entry["description"] for key, entry in skills.items()}}
         if tasks["items"]:
             context["todo"] = tasks["items"]
-        system = self.system_prompt(names, context)
+        system = self.system_prompt(names, context, self.guidance)
         items = self.state.attachments.prepare(attachments)
         messages = [self.state.attachments.user_message(prompt, items)]
         base = size([system, *messages]) + size(schemas)
@@ -273,7 +288,7 @@ class Agent:
             room = max(0, min(self.context_chars // 4, (self.context_chars - base) // 2))
             project = self.project_context(session, prompt, room, self.state.turn_count(session) == 0)
             context["project"] = project["payload"]
-            system = self.system_prompt(names, context, project.get("guidance", ()))
+            system = self.system_prompt(names, context, [*self.guidance, *project.get("guidance", ())])
             base = size([system, *messages]) + size(schemas)
             self.emit("context", sources=project["sources"], budget=room,
                       used=size(project["payload"].get("notes", [])))
@@ -407,7 +422,12 @@ class Agent:
         try:
             handler = available[name]
             args = json.loads(call["function"]["arguments"] or "{}")
-            result = handler(**toolkit.validate_arguments(name, args))
+            if name in toolkit.FIELDS:
+                result = handler(**toolkit.validate_arguments(name, args))
+            elif isinstance(args, dict):
+                result = handler(args)  # A team tool: it validates its own, structured arguments.
+            else:
+                raise ValueError("Send the tool's arguments as a JSON object.")
         except KeyError:
             result = {"error": "Tool or saved skill is unavailable."}
         except OSError:
@@ -441,16 +461,16 @@ class Agent:
         plan = self.files.plan_write(path, content)
         verb = "Replace" if plan["existed"] else "Create"
         return self.act({"tool": "write_file", "summary": f"{verb} {self.files.label(plan['target'])}",
-                         "detail": plan["diff"], "danger": None}, lambda: self.files.apply(plan))
+                         "target": self.files.label(plan["target"]), "detail": plan["diff"], "danger": None}, lambda: self.files.apply(plan))
 
     def patch(self, path, old_text, new_text):
         plan = self.files.plan_patch(path, old_text, new_text)
         return self.act({"tool": "patch", "summary": f"Edit {self.files.label(plan['target'])}",
-                         "detail": plan["diff"], "danger": None}, lambda: self.files.apply(plan))
+                         "target": self.files.label(plan["target"]), "detail": plan["diff"], "danger": None}, lambda: self.files.apply(plan))
 
     def terminal(self, command, timeout=60):
         return self.act(
-            {"tool": "terminal", "summary": f"Run a command in {self.workspace}", "detail": command,
+            {"tool": "terminal", "summary": f"Run a command in {self.workspace}", "detail": command, "target": command,
              "danger": dangerous_reason(command)},
             lambda: toolkit.run_command(command, self.workspace, timeout, self.output_chars,
                                         poll=lambda: self.emit("tool_wait")),

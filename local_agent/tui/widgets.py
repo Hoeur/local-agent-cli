@@ -915,6 +915,7 @@ class StatusBar(Animated, Widget):
     completion_tokens = reactive(0)
     estimated = reactive(False)
     learn = reactive(False)
+    team = reactive("")
 
     def on_mount(self):
         self.start_animation()
@@ -960,6 +961,11 @@ class StatusBar(Animated, Widget):
         learn.append("on" if self.learn else "off",
                      Style(color=palette["success"] if self.learn else palette["muted"]))
         parts.append(learn)
+        if self.team:
+            team = Text()
+            team.append("team ", muted)
+            team.append(clean(self.team)[:16], Style(color=palette["accent"]))
+            parts.insert(0, team)
         hints = Text()
         for key, label in (("^P", "palette"), ("^B", "sidebar"), ("esc", "cancel" if busy else "close"),
                            ("f1", "help")):

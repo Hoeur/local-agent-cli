@@ -462,6 +462,8 @@ def main(argv=None):
     for sub in (note_list, note_search, note_show, note_path, note_new, note_rename,
                 task_list, task_new, task_status, task_outcome):
         sub.add_argument("--project", help=which)
+    from . import team_commands
+    team_commands.add_parser(commands, which)
     args = parser.parse_args(argv)
 
     try:
@@ -471,6 +473,9 @@ def main(argv=None):
             return note_command(args)
         if args.command == "task":
             return task_command(args)
+        if args.command == "team":
+            from .team_commands import team_command
+            return team_command(args)
         if args.command == "setup":
             return setup_profile(args)
         if args.command == "key":

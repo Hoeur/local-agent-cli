@@ -110,11 +110,18 @@ class ActionScreen(FitsWindow, ModalScreen[bool]):
         palette, glyphs = self.app.palette, self.app.glyphs
         action = self.action
         danger = action.get("danger")
-        title = Text(f"{glyphs.warn} The agent wants to {self.VERBS.get(action['tool'], action['tool'])}",
+        who = f"{clean(action['agent_name'])} ({clean(action['role'])})" if action.get("agent_name") else "The agent"
+        title = Text(f"{glyphs.warn} {who} wants to {self.VERBS.get(action['tool'], action['tool'])}",
                      Style(color=palette["error" if danger else "warning"], bold=True))
         detail = clean(str(action.get("detail") or ""))
         language = "bash" if action["tool"] == "terminal" else "diff"
-        body = [Text(clean(action["summary"]), Style(bold=True))]
+        body = []
+        if action.get("agent_name"):
+            # Team runs: say exactly who is asking, where, and for which assignment.
+            body.append(Text(f"Team run {clean(action['run'])} · project {clean(action['project'])} · "
+                             f"{clean(action['model'])} · assignment {clean(action['subtask'])}\n"
+                             f"Workspace {clean(action['workspace'])}", Style(color=palette["muted"])))
+        body.append(Text(clean(action["summary"]), Style(bold=True)))
         if danger:
             body.append(Text(f"\n Dangerous: this command {danger}. ", Style(color=palette["background"],
                                                                          bgcolor=palette["error"], bold=True)))
@@ -210,6 +217,7 @@ HELP = """\
 | `ctrl+n` | New session |
 | `f5` | Projects: open, register, rename, unregister |
 | `f6` · `f7` | Project home · notes, ideas, decisions and tasks |
+| `f8` | Agent teams: choose a team or single-agent mode, edit who runs which model |
 | `f9` · **Save…** | Save the latest reply as an idea, note, decision or task (you edit it first) |
 | `ctrl+q` · `/exit` | Quit |
 
@@ -235,6 +243,21 @@ and up to three notes whose words match your message. A **context** line above e
 `/context` explains why. `/implement <task>` starts a conversation with the task, its acceptance criteria \
 and linked decisions; `/outcome` records what changed, how it was verified and what is unresolved. \
 Tasks are completed only when you set the status.
+
+## Agent teams
+
+In a project, `f8` (or `/team NAME`) switches messages from one agent to a team: a coordinator that plans \
+and synthesizes, one implementer that may change files, and read-only reviewers or researchers. Each agent \
+names a saved profile and model, so a team can use one model or mix providers. Before each run a preflight \
+lists every agent's provider/model and any problem. The run panel in the conversation shows each agent's \
+role, model, state, action, time and token usage (`~` marks estimates); press enter on a row to see its \
+output. Approvals name the agent, project and target. `esc` or **Stop** cancels the run: no new work \
+starts, running commands stop, and completed changes stay. `/team off` returns to one agent. In the \
+notes browser, `g` on a task starts a team implementation run.
+
+| Teams screen | `enter` use team · `s` single agent · `tab` agents · `e` edit agent · `n` new team · `l` limits · \
+`w` parallel writers · `c` check models · `r` run now · `d` delete |
+|---|---|
 
 ## Commands
 

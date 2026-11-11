@@ -129,6 +129,16 @@ In the full-screen UI, `f5` switches projects, `f6` opens the project home (over
 
 Notes are ordinary Markdown in the project's `.agent-project/` folder, safe to edit in any editor and to commit; edits made outside the app are never overwritten silently. Each request includes the overview when relevant, notes you selected and a few notes that match your words, within a quarter of the context budget, and a **context** line above the reply shows which. Projects are optional: without one, everything works as before. See [docs/PROJECTS.md](docs/PROJECTS.md) for the file format, context rules, commands and keys.
 
+### Agent teams
+
+In a project, a task can also be run by a team: a coordinator that plans and synthesizes, one implementer that changes files with your approval, and read-only reviewers or researchers. Each agent uses one of your saved profiles and models, so a team can run on one model or mix providers. Runs are bounded by limits you set, every approval names the agent asking, the result separates what the run verified from what agents claimed, and task outcomes are recorded but never marked complete for you. Git projects can also use parallel writers in isolated worktrees.
+
+```powershell
+python -m local_agent team run implement "Add a --version flag with a test" --project my-app
+```
+
+In the full-screen UI press `f8`. See [docs/TEAMS.md](docs/TEAMS.md) for presets, mixed-model setup, limits and parallel writers.
+
 ## Attachments and artifacts
 
 Attach local images or UTF-8 text with repeatable `--attach` options.
@@ -246,7 +256,7 @@ python -m local_agent task outcome add-csv-export --outcome "Export works" --ver
 python -m local_agent chat --project my-app --task add-csv-export
 ```
 
-`project`, `note` and `task` manage projects and their Markdown notes; `sessions`, `history`, `search`, `todo` and `delete-session` take `--project NAME` for a project's conversations.
+`project`, `note` and `task` manage projects and their Markdown notes; `team` configures, checks and runs agent teams (see [docs/TEAMS.md](docs/TEAMS.md)); `sessions`, `history`, `search`, `todo` and `delete-session` take `--project NAME` for a project's conversations.
 
 - `--learn` enables changes to memories and skills. Before saving, the CLI lists the pending changes and asks for confirmation. Declined changes are discarded, and the saved reply and tool results note that they were not saved. The model receives saved memories and a list of skill descriptions on each turn. It can request the full text of a relevant skill by name.
 - `--max-rounds N` sets how many tool rounds a turn may use, from 1 to 50 (default 6). Multi-step coding tasks with `--write --shell` usually need more, for example `--max-rounds 20`. After the last round, the model is asked for a text answer with no tools available.
@@ -299,6 +309,7 @@ Automated regression checks cover:
 - **Storage:** schema upgrades, persistence, rollback, stale session writes, skill storage and store limits.
 - **Approval and limits:** disabled learning, change approval, declined-change history, and tool limits.
 - **Command line:** the memory, skill, search, todo and session commands, and the project, note and task commands.
+- **Teams:** configuration validation, same-model and mixed-provider routing with separate provider objects, tool permissions, context isolation, dependencies, concurrency and request limits, attributed and serialized approvals, cancellation during streaming, commands and approval, interrupted runs, fallback and provider failures, bounded revisions, task outcomes, and Git worktree isolation, conflicts and integration, all against scripted models.
 - **Projects:** registration and normalized-path duplicates, missing and moved folders, the schema 3 to 4 upgrade (including a failed upgrade), isolation of conversations, task lists, search and artifacts, Markdown round trips, external-edit conflicts, links and search, context selection and budgets, brainstorm drafts, idea-to-task conversion, implementation handoff and outcomes.
 - **Terminal UI:** streaming, tool rows, the approval and action dialogs, dangerous-command focus, cancellation, errors, commands, autocomplete, file previews, resizing and resumed history; for projects, the switcher, home, notes browser and editor, per-project drafts and attachments, switching during a turn, context-source lines, review before saving, conflict handling, task handoff and outcomes, and layouts at several terminal sizes.
 - **Streaming:** against a local HTTP endpoint.

@@ -115,6 +115,10 @@ Notes are sent as reference material in the saved-context data, with an instruct
 
 Afterwards, `/outcome` (or `o` on the task) records a dated entry with the outcome, the verification performed and unresolved issues, linked to the conversation. A model saying "done" changes nothing; completing a task is always your choice. In the full-screen interface, completing a task that has no recorded outcome asks first.
 
+## Agent teams
+
+A project task can also be implemented by a team of agents on the same or different models: `g` on a task, `/team` in chat, or `python -m local_agent team run NAME --task TASK`. The run records its outcome on the task like `/outcome` does, and leaves completion to you. See [TEAMS.md](TEAMS.md).
+
 ## Commands
 
 | Command line | What it does |

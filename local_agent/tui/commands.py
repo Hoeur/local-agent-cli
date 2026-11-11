@@ -60,6 +60,8 @@ COMMANDS = [
     Command("context", "/context [add|remove|clear] [note]", "Notes sent with this conversation, and why"),
     Command("implement", "/implement <task>", "Start the implementation conversation for a task", False),
     Command("outcome", "/outcome [task]", "Record a task's outcome, verification and open issues"),
+    Command("team", "/team [name|off|runs|result <id>|run <request>]",
+            "Agent teams (f8): choose a team or single-agent mode, list runs, show a result"),
     Command("exit", "/exit", "Quit"),
 ]
 BY_NAME = {command.name: command for command in COMMANDS}
@@ -105,6 +107,16 @@ class AgentCommands(Provider):
                     str(project.path)
         if app.project is not None:
             yield "Leave project: classic sessions", partial(app.run_slash, "/project none"), "conversations outside projects"
+            try:
+                from ..teams import TeamStore
+                team_names = list(TeamStore(app.data_dir, app.project.id).teams())
+            except ValueError:
+                team_names = []
+            for name in team_names:
+                if name != app.team_mode:
+                    yield f"Team mode: {name}", partial(app.run_slash, f"/team {name}"), "messages start team runs"
+            if app.team_mode:
+                yield "Single-agent mode", partial(app.run_slash, "/team off"), "messages go to one agent"
         try:
             from ..config import read_settings
 
